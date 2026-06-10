@@ -1,0 +1,105 @@
+/* filequeue 매뉴얼 스타일 */
+:root {
+  --fg: #1f2328;
+  --muted: #59636e;
+  --bg: #ffffff;
+  --accent: #0969da;
+  --border: #d0d7de;
+  --code-bg: #f6f8fa;
+  --note-bg: #ddf4ff;
+  --note-bd: #54aeff;
+  --warn-bg: #fff8c5;
+  --warn-bd: #d4a72c;
+  --maxw: 900px;
+}
+
+html { font-size: 16px; }
+body {
+  color: var(--fg);
+  background: var(--bg);
+  font-family: -apple-system, "Segoe UI", "Malgun Gothic", "Apple SD Gothic Neo",
+               "Noto Sans KR", Roboto, sans-serif;
+  line-height: 1.7;
+  margin: 0 auto;
+  max-width: var(--maxw);
+  padding: 2.5rem 1.5rem 6rem;
+  word-break: keep-all;       /* 한글 줄바꿈 */
+  overflow-wrap: break-word;
+}
+
+/* 제목 블록 */
+header#title-block-header h1.title { font-size: 2.1rem; margin-bottom: .25rem; }
+header#title-block-header p.subtitle { color: var(--muted); font-size: 1.1rem; margin-top: 0; }
+header#title-block-header p.author,
+header#title-block-header p.date { color: var(--muted); margin: .1rem 0; font-size: .9rem; }
+
+h1, h2, h3, h4 { line-height: 1.3; margin-top: 2.2rem; font-weight: 650; }
+h1 { font-size: 1.8rem; border-bottom: 2px solid var(--border); padding-bottom: .3rem; }
+h2 { font-size: 1.4rem; border-bottom: 1px solid var(--border); padding-bottom: .25rem; }
+h3 { font-size: 1.15rem; }
+h4 { font-size: 1rem; color: var(--muted); }
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* 목차 */
+nav#TOC {
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1rem 1.25rem;
+  margin: 1.5rem 0 2.5rem;
+}
+nav#TOC::before {
+  content: attr(title);
+  display: block;
+  font-weight: 700;
+  margin-bottom: .5rem;
+}
+nav#TOC ul { margin: .2rem 0; padding-left: 1.2rem; }
+nav#TOC > ul { list-style: none; padding-left: 0; }
+
+/* 코드 */
+code {
+  font-family: "Cascadia Code", "Consolas", ui-monospace, monospace;
+  font-size: .9em;
+  background: var(--code-bg);
+  padding: .15em .35em;
+  border-radius: 4px;
+}
+pre {
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1rem;
+  overflow-x: auto;
+  line-height: 1.5;
+}
+pre code { background: none; padding: 0; font-size: .85em; }
+
+/* 표 */
+table { border-collapse: collapse; width: 100%; margin: 1.25rem 0; font-size: .95rem; }
+th, td { border: 1px solid var(--border); padding: .5rem .75rem; text-align: left; vertical-align: top; }
+thead th { background: var(--code-bg); }
+tbody tr:nth-child(even) { background: #fbfcfd; }
+
+/* 인용구 → 주의/참고 박스 */
+blockquote {
+  margin: 1.25rem 0;
+  padding: .75rem 1rem;
+  background: var(--note-bg);
+  border-left: 4px solid var(--note-bd);
+  border-radius: 4px;
+  color: var(--fg);
+}
+blockquote p { margin: .3rem 0; }
+
+hr { border: none; border-top: 1px solid var(--border); margin: 2.5rem 0; }
+
+/* 코드 키워드(임시) */
+.todo { color: #b35900; font-style: italic; }
+
+@media (max-width: 640px) {
+  body { padding: 1.5rem 1rem 4rem; }
+  h1 { font-size: 1.5rem; }
+}

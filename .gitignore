@@ -1,0 +1,14 @@
+/build/
+*.o
+*.obj
+*.a
+*.lib
+*.exe
+_atom_test/
+_basic_test/
+
+# 생성된 매뉴얼 (docs/build_manual.sh 로 재생성)
+docs/manual.html
+
+# 로컬 전용 설정
+.claude/settings.local.json
