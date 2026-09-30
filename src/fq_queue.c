@@ -52,6 +52,29 @@ void fq_close(fq_queue *q)
 
 /* ---- Producer ---- */
 
+/* 최종 메시지명: <epoch_ms>-<seq>-<producer>-<id>[.<stream>].msg
+ * 앞쪽 시간+seq 로 best-effort FIFO 정렬. */
+static void incoming_path(fq_queue *q, const char *id, const char *stream_key, char *msg_path, size_t n)
+{
+    uint64_t now = fq_now_wall_ms();
+    uint32_t seq = ++q->seq;
+    char msg_name[512];
+    if (stream_key && stream_key[0])
+        snprintf(msg_name, sizeof(msg_name), "%016llu-%06u-%s-%s.%s.msg",
+                 (unsigned long long)now, seq, q->node_id, id, stream_key);
+    else
+        snprintf(msg_name, sizeof(msg_name), "%016llu-%06u-%s-%s.msg",
+                 (unsigned long long)now, seq, q->node_id, id);
+    fq_path(msg_path, n, q->root, FQ_DIR_INCOMING, msg_name);
+}
+
+static void fsync_incoming(fq_queue *q)
+{
+    char inc_dir[1280];
+    fq_path(inc_dir, sizeof(inc_dir), q->root, FQ_DIR_INCOMING, NULL);
+    fq_fs_fsync_dir(inc_dir);
+}
+
 int fq_publish(fq_queue *q, const void *data, size_t len, const char *stream_key)
 {
     char id[64];
@@ -63,27 +86,52 @@ int fq_publish(fq_queue *q, const void *data, size_t len, const char *stream_key
     fq_path(tmp_path, sizeof(tmp_path), q->root, FQ_DIR_TMP, tmp_name);
     if (fq_fs_write_sync(tmp_path, data, len) != FQ_OK) return FQ_ERR;
 
-    /* 2) 최종 메시지명: <epoch_ms>-<seq>-<producer>-<id>[.<stream>].msg
-     *    앞쪽 시간+seq 로 best-effort FIFO 정렬. */
-    uint64_t now = fq_now_wall_ms();
-    uint32_t seq = ++q->seq;
-    char msg_name[512], msg_path[1408];
-    if (stream_key && stream_key[0])
-        snprintf(msg_name, sizeof(msg_name), "%016llu-%06u-%s-%s.%s.msg",
-                 (unsigned long long)now, seq, q->node_id, id, stream_key);
-    else
-        snprintf(msg_name, sizeof(msg_name), "%016llu-%06u-%s-%s.msg",
-                 (unsigned long long)now, seq, q->node_id, id);
-    fq_path(msg_path, sizeof(msg_path), q->root, FQ_DIR_INCOMING, msg_name);
+    /* 2) 최종 메시지명 */
+    char msg_path[1408];
+    incoming_path(q, id, stream_key, msg_path, sizeof(msg_path));
 
     /* 3) 원자적 rename (대상은 유일하므로 EEXIST 없음) */
     int rc = fq_fs_rename_noreplace(tmp_path, msg_path);
     if (rc != FQ_OK) { fq_fs_unlink(tmp_path); return rc; }
 
     /* 4) 디렉터리 영속화 */
-    char inc_dir[1280];
-    fq_path(inc_dir, sizeof(inc_dir), q->root, FQ_DIR_INCOMING, NULL);
-    fq_fs_fsync_dir(inc_dir);
+    fsync_incoming(q);
+    return FQ_OK;
+}
+
+/* ---- 2단계 발행 / 꺼내기 (트랜잭션 큐용, fq.h 참고) ---- */
+
+int fq_adopt(fq_queue *q, const char *path, const char *stream_key)
+{
+    char id[64];
+    fq_gen_id(id, sizeof(id));
+    char msg_path[1408];
+    incoming_path(q, id, stream_key, msg_path, sizeof(msg_path));
+    int rc = fq_fs_rename_noreplace(path, msg_path);   /* 원본이 없으면 FQ_ENOENT: 이미 옮겨짐 */
+    if (rc != FQ_OK) return rc;
+    fsync_incoming(q);
+    return FQ_OK;
+}
+
+int fq_take(fq_queue *q, fq_msg *m, const char *path)
+{
+    char src[1408];
+    fq_path(src, sizeof(src), q->root, FQ_DIR_INFLIGHT, m->name);
+    int rc = fq_fs_rename_noreplace(src, path);
+    if (rc != FQ_OK) return rc;                         /* m은 여전히 claim 상태 */
+    /* 옮긴 곳의 디렉터리 영속화 */
+    char dir[1408];
+    snprintf(dir, sizeof(dir), "%s", path);
+    char *slash = strrchr(dir, '/');
+#ifdef _WIN32
+    char *bs = strrchr(dir, '\\');
+    if (!slash || (bs && bs > slash)) slash = bs;
+#endif
+    if (slash) {
+        *slash = '\0';
+        fq_fs_fsync_dir(dir[0] ? dir : "/");
+    }
+    fq_msg_free(m);
     return FQ_OK;
 }
 

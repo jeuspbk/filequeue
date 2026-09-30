@@ -167,6 +167,11 @@ inflight 파일명에는 소유권/펜싱 정보를 추가로 stamp 한다.
 - **순서:** 단일 활성 소비자가 파일명 정렬 순으로 oldest-first 처리하면 best-effort FIFO.
   엄격 순서가 필요하면 stream_key로 파티셔닝하여 파티션 내 순서만 보장
   (실패 복구 시 중복으로 인한 미세 재정렬은 발생 가능).
+- **2단계 발행/꺼내기 (`fq_adopt` / `fq_take`):** 트랜잭션 관리자(예: mica의 /Q 자원 관리자)가 메시지를 큐 밖
+  (같은 파일시스템)의 파일에 보관했다가 결정에 따라 옮긴다. `fq_adopt` = 영속된 파일을 `incoming/`으로 rename
+  (새 이름, 발행 시각 = 지금), `fq_take` = claim한 메시지를 `inflight/`에서 호출자의 파일로 rename(ack 대신).
+  원칙 §0 그대로 상태 전이는 rename 한 번이고, 원본이 사라지므로 크래시 후 같은 호출을 반복해도 중복이 없다
+  (`fq_adopt`는 원본이 없으면 `FQ_ENOENT`). 꺼낸 메시지는 `inflight/`에 없으므로 stale 복구 대상이 아니다.
 
 ---
 

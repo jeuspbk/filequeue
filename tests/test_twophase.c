@@ -1,0 +1,67 @@
+/* test_twophase.c - fq_adopt / fq_take: 큐 밖 파일과 큐 사이의 원자적 이동(멱등) */
+#include "fq.h"
+#include "fq_fs.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+static int fails = 0;
+#define CHECK(cond, msg) do { \
+    if (cond) { printf("  [PASS] %s\n", msg); } \
+    else      { printf("  [FAIL] %s\n", msg); fails++; } \
+} while (0)
+
+int main(int argc, char **argv)
+{
+    const char *root = argc > 1 ? argv[1] : "_twophase_test";
+    printf("== filequeue 2단계 발행/꺼내기 (%s) ==\n", root);
+
+    char qroot[512], stage[512], f1[600], f2[600];
+    snprintf(qroot, sizeof(qroot), "%s/q", root);
+    snprintf(stage, sizeof(stage), "%s/stage", root);
+    snprintf(f1, sizeof(f1), "%s/e1", stage);
+    snprintf(f2, sizeof(f2), "%s/d1", stage);
+
+    fq_queue *q = NULL;
+    CHECK(fq_open(qroot, "nodeT", &q) == FQ_OK && q, "fq_open");
+    if (!q) return 1;
+    CHECK(fq_fs_mkdirs(stage) == FQ_OK, "보관 디렉터리");
+
+    printf("[1] fq_adopt\n");
+    CHECK(fq_fs_write_sync(f1, "staged", 6) == FQ_OK, "보관 파일 기록");
+    fq_msg *m = NULL;
+    CHECK(fq_consume(q, &m) == FQ_EEMPTY, "adopt 전: 큐는 비어 있음");
+    CHECK(fq_adopt(q, f1, NULL) == FQ_OK, "adopt");
+    CHECK(fq_fs_exists(f1) == 0, "원본은 옮겨져 사라짐");
+    CHECK(fq_adopt(q, f1, NULL) == FQ_ENOENT, "다시 adopt: FQ_ENOENT (멱등, 중복 없음)");
+
+    printf("[2] fq_take\n");
+    CHECK(fq_consume(q, &m) == FQ_OK && m && m->len == 6 && memcmp(m->data, "staged", 6) == 0,
+          "adopt한 메시지를 consume");
+    CHECK(m && fq_take(q, m, f2) == FQ_OK, "take: 큐 밖 파일로 꺼냄");
+    CHECK(fq_fs_exists(f2) == 1, "꺼낸 파일이 보관 디렉터리에 있음");
+    fq_msg *m2 = NULL;
+    CHECK(fq_consume(q, &m2) == FQ_EEMPTY, "take 뒤: 큐는 비어 있음 (inflight에도 없음)");
+    fq_lease lease;
+    CHECK(fq_acquire_leadership(q, &lease) == FQ_OK && fq_recover_stale(q, &lease) >= 0, "stale 복구");
+    CHECK(fq_consume(q, &m2) == FQ_EEMPTY, "꺼낸 메시지는 stale 복구로도 되살아나지 않음");
+
+    printf("[3] 되돌리기 (rollback = adopt)\n");
+    CHECK(fq_adopt(q, f2, NULL) == FQ_OK, "꺼낸 파일을 다시 adopt");
+    CHECK(fq_consume(q, &m2) == FQ_OK && m2 && m2->len == 6, "다시 consume 가능");
+    if (m2) fq_ack(q, m2);
+
+    printf("[4] take 실패 시 claim 유지\n");
+    CHECK(fq_publish(q, "x", 1, NULL) == FQ_OK, "publish");
+    fq_msg *m3 = NULL;
+    CHECK(fq_consume(q, &m3) == FQ_OK && m3, "consume");
+    char bad[600];
+    snprintf(bad, sizeof(bad), "%s/no/such/dir/x", root);
+    CHECK(m3 && fq_take(q, m3, bad) != FQ_OK, "없는 디렉터리로 take: 실패");
+    CHECK(m3 && fq_nack(q, m3) == FQ_OK, "m은 claim 상태 그대로: nack 가능");
+
+    fq_close(q);
+    printf("%s (%d fail)\n", fails ? "FAILED" : "OK", fails);
+    return fails ? 1 : 0;
+}

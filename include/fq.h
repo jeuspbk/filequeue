@@ -72,6 +72,18 @@ void fq_msg_free(fq_msg *m);
  * 노드 식별자는 fq_open에서 설정한 q->node_id를 사용한다. */
 int  fq_consume(fq_queue *q, fq_msg **out);
 
+/* ---- 2단계 발행 / 꺼내기 (트랜잭션 큐용) ----
+ * 트랜잭션 관리자 쪽이 큐 밖(같은 파일시스템)의 파일에 메시지를 보관했다가
+ * 결정에 따라 원자적 rename 한 번으로 큐에 넣거나 뺀다. 둘 다 원본이 옮겨지면
+ * 사라지므로, 크래시 후 같은 호출을 다시 해도 중복이 생기지 않는다(멱등).
+ *
+ * fq_adopt: 이미 영속된(fsync된) 파일 path를 새 메시지로 큐에 넣는다(발행 시각은 지금).
+ *           FQ_ENOENT = path가 없음(이미 넣었음).
+ * fq_take : claim한 메시지 m을 큐에서 꺼내 path로 옮긴다(ack 대신). 성공하면 m은 해제되고
+ *           path의 디렉터리를 fsync한다. 실패하면 m은 claim 상태 그대로(fq_nack 가능). */
+int  fq_adopt(fq_queue *q, const char *path, const char *stream_key);
+int  fq_take(fq_queue *q, fq_msg *m, const char *path);
+
 /* ---- 유지보수 ---- */
 /* tmp/의 고아 임시파일(발행 중 크래시 잔재) 중 mtime이 tmp_max_age_ms보다 오래된 것 정리.
  * 반환: 삭제한 개수(>=0), 오류 시 음수. */

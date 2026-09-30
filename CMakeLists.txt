@@ -42,6 +42,10 @@ add_executable(test_consume tests/test_consume.c)
 target_link_libraries(test_consume filequeue)
 add_test(NAME consume COMMAND test_consume)
 
+add_executable(test_twophase tests/test_twophase.c)
+target_link_libraries(test_twophase filequeue)
+add_test(NAME twophase COMMAND test_twophase)
+
 # 다중 프로세스 드라이버 (CLI 예제 겸 동시성/failover 테스트용)
 add_executable(fq_producer examples/fq_producer.c)
 target_link_libraries(fq_producer filequeue)
