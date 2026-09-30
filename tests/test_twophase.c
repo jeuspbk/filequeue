@@ -12,6 +12,13 @@ static int fails = 0;
     else      { printf("  [FAIL] %s\n", msg); fails++; } \
 } while (0)
 
+static int count_cb(const char *name, void *ud)
+{
+    (void)name;
+    (*(int *)ud)++;
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     const char *root = argc > 1 ? argv[1] : "_twophase_test";
@@ -60,6 +67,31 @@ int main(int argc, char **argv)
     snprintf(bad, sizeof(bad), "%s/no/such/dir/x", root);
     CHECK(m3 && fq_take(q, m3, bad) != FQ_OK, "없는 디렉터리로 take: 실패");
     CHECK(m3 && fq_nack(q, m3) == FQ_OK, "m은 claim 상태 그대로: nack 가능");
+    CHECK(fq_consume(q, &m3) == FQ_OK && m3 && fq_ack(q, m3) == FQ_OK, "nack한 것을 다시 받아 ack");
+
+    printf("[5] fq_return: nack처럼 attempt+1, 한도면 dead/\n");
+    CHECK(fq_publish(q, "r", 1, NULL) == FQ_OK, "publish");
+    char f3[600];
+    snprintf(f3, sizeof(f3), "%s/d2", stage);
+    uint32_t seen = 0;
+    int rounds = 0, ok = 1;
+    for (;;) {
+        fq_msg *mr = NULL;
+        int rc = fq_consume(q, &mr);
+        if (rc == FQ_EEMPTY) break;
+        if (rc != FQ_OK || !mr) { ok = 0; break; }
+        if (mr->attempt != seen) ok = 0;         /* 되돌릴 때마다 attempt가 하나씩 는다 */
+        uint32_t a = mr->attempt;
+        if (fq_take(q, mr, f3) != FQ_OK || fq_return(q, f3, a) != FQ_OK) { ok = 0; break; }
+        seen = a + 1;
+        if (++rounds > FQ_MAX_ATTEMPTS + 1) { ok = 0; break; }
+    }
+    CHECK(ok && rounds == FQ_MAX_ATTEMPTS, "FQ_MAX_ATTEMPTS번 되돌린 뒤 큐에서 사라짐");
+    char dead[600];
+    snprintf(dead, sizeof(dead), "%s/dead", qroot);
+    int ndead = 0;
+    CHECK(fq_fs_list(dead, count_cb, &ndead) == FQ_OK && ndead == 1, "dead/에 하나");
+    CHECK(fq_return(q, f3, 0) == FQ_ENOENT, "없는 파일을 되돌림: FQ_ENOENT (멱등)");
 
     fq_close(q);
     printf("%s (%d fail)\n", fails ? "FAILED" : "OK", fails);

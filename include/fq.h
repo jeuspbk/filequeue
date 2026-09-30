@@ -80,9 +80,13 @@ int  fq_consume(fq_queue *q, fq_msg **out);
  * fq_adopt: 이미 영속된(fsync된) 파일 path를 새 메시지로 큐에 넣는다(발행 시각은 지금).
  *           FQ_ENOENT = path가 없음(이미 넣었음).
  * fq_take : claim한 메시지 m을 큐에서 꺼내 path로 옮긴다(ack 대신). 성공하면 m은 해제되고
- *           path의 디렉터리를 fsync한다. 실패하면 m은 claim 상태 그대로(fq_nack 가능). */
+ *           path의 디렉터리를 fsync한다. 실패하면 m은 claim 상태 그대로(fq_nack 가능).
+ * fq_return: fq_take로 꺼낸 파일을 fq_nack처럼 되돌린다. attempt = 꺼낼 때의 m->attempt;
+ *           attempt+1로 incoming에 넣고, FQ_MAX_ATTEMPTS에 닿으면 dead/로 옮긴다.
+ *           FQ_ENOENT = path가 없음(이미 되돌렸음). */
 int  fq_adopt(fq_queue *q, const char *path, const char *stream_key);
 int  fq_take(fq_queue *q, fq_msg *m, const char *path);
+int  fq_return(fq_queue *q, const char *path, uint32_t attempt);
 
 /* ---- 유지보수 ---- */
 /* tmp/의 고아 임시파일(발행 중 크래시 잔재) 중 mtime이 tmp_max_age_ms보다 오래된 것 정리.

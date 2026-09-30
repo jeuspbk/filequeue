@@ -172,6 +172,8 @@ inflight 파일명에는 소유권/펜싱 정보를 추가로 stamp 한다.
   (새 이름, 발행 시각 = 지금), `fq_take` = claim한 메시지를 `inflight/`에서 호출자의 파일로 rename(ack 대신).
   원칙 §0 그대로 상태 전이는 rename 한 번이고, 원본이 사라지므로 크래시 후 같은 호출을 반복해도 중복이 없다
   (`fq_adopt`는 원본이 없으면 `FQ_ENOENT`). 꺼낸 메시지는 `inflight/`에 없으므로 stale 복구 대상이 아니다.
+  `fq_return`은 꺼낸 파일을 `fq_nack`과 같은 규칙으로 되돌린다(꺼낼 때의 attempt+1, 한도면 `dead/`) — 트랜잭션이
+  롤백될 때마다 시도로 세어 poison 메시지가 무한히 돌지 않게 한다.
 
 ---
 

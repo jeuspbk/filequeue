@@ -54,17 +54,22 @@ void fq_close(fq_queue *q)
 
 /* 최종 메시지명: <epoch_ms>-<seq>-<producer>-<id>[.<stream>].msg
  * 앞쪽 시간+seq 로 best-effort FIFO 정렬. */
-static void incoming_path(fq_queue *q, const char *id, const char *stream_key, char *msg_path, size_t n)
+static void new_msg_name(fq_queue *q, const char *id, const char *stream_key, char *msg_name, size_t n)
 {
     uint64_t now = fq_now_wall_ms();
     uint32_t seq = ++q->seq;
-    char msg_name[512];
     if (stream_key && stream_key[0])
-        snprintf(msg_name, sizeof(msg_name), "%016llu-%06u-%s-%s.%s.msg",
+        snprintf(msg_name, n, "%016llu-%06u-%s-%s.%s.msg",
                  (unsigned long long)now, seq, q->node_id, id, stream_key);
     else
-        snprintf(msg_name, sizeof(msg_name), "%016llu-%06u-%s-%s.msg",
+        snprintf(msg_name, n, "%016llu-%06u-%s-%s.msg",
                  (unsigned long long)now, seq, q->node_id, id);
+}
+
+static void incoming_path(fq_queue *q, const char *id, const char *stream_key, char *msg_path, size_t n)
+{
+    char msg_name[512];
+    new_msg_name(q, id, stream_key, msg_name, sizeof(msg_name));
     fq_path(msg_path, n, q->root, FQ_DIR_INCOMING, msg_name);
 }
 
@@ -132,6 +137,34 @@ int fq_take(fq_queue *q, fq_msg *m, const char *path)
         fq_fs_fsync_dir(dir[0] ? dir : "/");
     }
     fq_msg_free(m);
+    return FQ_OK;
+}
+
+int fq_return(fq_queue *q, const char *path, uint32_t attempt)
+{
+    /* fq_nack과 같은 규칙: attempt+1로 incoming, 한도에 닿으면 dead/ */
+    char id[64];
+    fq_gen_id(id, sizeof(id));
+    char name[512];
+    new_msg_name(q, id, NULL, name, sizeof(name));
+    char dst[1408];
+    int dead = attempt + 1 >= FQ_MAX_ATTEMPTS;
+    if (dead) {
+        fq_path(dst, sizeof(dst), q->root, FQ_DIR_DEAD, name);
+    } else {
+        char req_name[640];
+        snprintf(req_name, sizeof(req_name), "%s.a%u", name, attempt + 1);
+        fq_path(dst, sizeof(dst), q->root, FQ_DIR_INCOMING, req_name);
+    }
+    int rc = fq_fs_rename_noreplace(path, dst);         /* 원본이 없으면 FQ_ENOENT: 이미 되돌림 */
+    if (rc != FQ_OK) return rc;
+    if (dead) {
+        char dead_dir[1280];
+        fq_path(dead_dir, sizeof(dead_dir), q->root, FQ_DIR_DEAD, NULL);
+        fq_fs_fsync_dir(dead_dir);
+    } else {
+        fsync_incoming(q);
+    }
     return FQ_OK;
 }
 
