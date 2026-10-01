@@ -61,6 +61,16 @@ int  fq_ack(fq_queue *q, fq_msg *m);    /* inflight unlink (처리 완료) */
 int  fq_nack(fq_queue *q, fq_msg *m);   /* 즉시 requeue (attempt+1) */
 void fq_msg_free(fq_msg *m);
 
+/* ---- 골라서 소비 ----
+ * fq_claim_if: incoming을 오래된 순으로 보며 want(data, len, ud)가 1을 돌려주는 첫 메시지를
+ *              claim한다(0이면 건너뜀). 후보마다 파일을 읽으므로 fq_claim보다 비싸다.
+ *              FQ_EEMPTY = 원하는 메시지가 없음.
+ * fq_release : claim한 메시지를 원래 이름 그대로 incoming에 되돌린다(attempt·순서 유지:
+ *              들여다보기 용). 성공하면 m은 해제된다. */
+typedef int (*fq_want_fn)(const void *data, size_t len, void *ud);
+int  fq_claim_if(fq_queue *q, const fq_lease *lease, fq_want_fn want, void *ud, fq_msg **out);
+int  fq_release(fq_queue *q, fq_msg *m);
+
 /* ---- 통합 소비 wrapper ---- */
 /* 리더십 획득(또는 유지·갱신) → 인수 시 stale 복구 → 하트비트 → claim 을 한 번에 처리한다.
  * 호출자는 다음 메시지만 받으면 되고, 리더십/리스 관리는 큐 핸들 내부 상태로 자동 처리된다.
@@ -71,6 +81,8 @@ void fq_msg_free(fq_msg *m);
  *   FQ_ERR     : 오류.
  * 노드 식별자는 fq_open에서 설정한 q->node_id를 사용한다. */
 int  fq_consume(fq_queue *q, fq_msg **out);
+/* fq_consume과 같되 fq_claim_if로 고른다. */
+int  fq_consume_if(fq_queue *q, fq_want_fn want, void *ud, fq_msg **out);
 
 /* ---- 2단계 발행 / 꺼내기 (트랜잭션 큐용) ----
  * 트랜잭션 관리자 쪽이 큐 밖(같은 파일시스템)의 파일에 메시지를 보관했다가

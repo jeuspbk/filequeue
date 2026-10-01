@@ -27,7 +27,8 @@ static uint64_t renew_interval_ms(void)
     return iv < 50 ? 50 : iv;
 }
 
-int fq_consume(fq_queue *q, fq_msg **out)
+/* 리더십 획득·갱신. FQ_OK면 claim해도 된다. */
+static int lead(fq_queue *q)
 {
     uint64_t now = fq_now_wall_ms();
 
@@ -47,6 +48,19 @@ int fq_consume(fq_queue *q, fq_msg **out)
         if (rc != FQ_OK)        return FQ_ERR;
         q->lead_next_renew_ms = now + renew_interval_ms();
     }
+    return FQ_OK;
+}
 
+int fq_consume(fq_queue *q, fq_msg **out)
+{
+    int rc = lead(q);
+    if (rc != FQ_OK) return rc;
     return fq_claim(q, &q->lead_lease, out);
+}
+
+int fq_consume_if(fq_queue *q, fq_want_fn want, void *ud, fq_msg **out)
+{
+    int rc = lead(q);
+    if (rc != FQ_OK) return rc;
+    return fq_claim_if(q, &q->lead_lease, want, ud, out);
 }

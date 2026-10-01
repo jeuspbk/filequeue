@@ -273,6 +273,66 @@ int fq_claim(fq_queue *q, const fq_lease *lease, fq_msg **out)
     }
 }
 
+/* ---- 골라서 claim / 되돌려 놓기 ---- */
+
+int fq_claim_if(fq_queue *q, const fq_lease *lease, fq_want_fn want, void *ud, fq_msg **out)
+{
+    /* 캐시를 쓰지 않고 매번 새로 나열한다: 건너뛴 메시지가 다음 호출에서 다시 후보가 되어야 한다. */
+    char inc_dir[1280];
+    fq_path(inc_dir, sizeof(inc_dir), q->root, FQ_DIR_INCOMING, NULL);
+    strvec sv = {0};
+    if (fq_fs_list(inc_dir, collect_cb, &sv) != FQ_OK) { strvec_free(&sv); return FQ_ERR; }
+    if (sv.n) qsort(sv.v, sv.n, sizeof(char *), cmp_str);
+    claim_cache_clear(q);                               /* fq_claim의 캐시도 무효 */
+
+    int result = FQ_EEMPTY;
+    for (size_t i = 0; i < sv.n && result == FQ_EEMPTY; i++) {
+        const char *name = sv.v[i];
+        char src[1408];
+        fq_path(src, sizeof(src), q->root, FQ_DIR_INCOMING, name);
+        void *data = NULL; size_t len = 0;
+        if (fq_fs_read_file(src, &data, &len) != FQ_OK) continue;   /* 그 사이 사라짐 */
+        if (!want(data, len, ud)) { free(data); continue; }
+
+        char base[512];
+        uint32_t attempt = 0;
+        fq_parse_attempt(name, base, sizeof(base), &attempt);
+        char inf_name[640], dst[1408];
+        snprintf(inf_name, sizeof(inf_name), "%s__t%llu", name, (unsigned long long)lease->token);
+        fq_path(dst, sizeof(dst), q->root, FQ_DIR_INFLIGHT, inf_name);
+        int rc = fq_fs_rename_noreplace(src, dst);
+        if (rc == FQ_ENOENT || rc == FQ_EEXIST) { free(data); continue; }
+        if (rc != FQ_OK) { free(data); result = FQ_ERR; break; }
+
+        fq_msg *m = (fq_msg *)calloc(1, sizeof(*m));
+        if (!m) { free(data); result = FQ_ERR; break; }
+        snprintf(m->name, sizeof(m->name), "%s", inf_name);
+        m->data = data;
+        m->len = len;
+        m->attempt = attempt;
+        *out = m;
+        result = FQ_OK;
+    }
+    strvec_free(&sv);
+    return result;
+}
+
+int fq_release(fq_queue *q, fq_msg *m)
+{
+    /* inflight -> incoming 원래 이름 그대로(attempt 변화 없음, 순서 유지) */
+    char logical[640];
+    fq_parse_inflight(m->name, logical, sizeof(logical));
+    char src[1408], dst[1408];
+    fq_path(src, sizeof(src), q->root, FQ_DIR_INFLIGHT, m->name);
+    fq_path(dst, sizeof(dst), q->root, FQ_DIR_INCOMING, logical);
+    int rc = fq_fs_rename_noreplace(src, dst);
+    if (rc != FQ_OK) return rc;                         /* m은 claim 상태 그대로 */
+    fsync_incoming(q);
+    claim_cache_clear(q);                               /* 되돌린 메시지가 다시 맨 앞 후보 */
+    fq_msg_free(m);
+    return FQ_OK;
+}
+
 /* ---- ack / nack ---- */
 
 int fq_ack(fq_queue *q, fq_msg *m)

@@ -174,6 +174,10 @@ inflight 파일명에는 소유권/펜싱 정보를 추가로 stamp 한다.
   (`fq_adopt`는 원본이 없으면 `FQ_ENOENT`). 꺼낸 메시지는 `inflight/`에 없으므로 stale 복구 대상이 아니다.
   `fq_return`은 꺼낸 파일을 `fq_nack`과 같은 규칙으로 되돌린다(꺼낼 때의 attempt+1, 한도면 `dead/`) — 트랜잭션이
   롤백될 때마다 시도로 세어 poison 메시지가 무한히 돌지 않게 한다.
+- **골라서 소비 (`fq_claim_if` / `fq_consume_if`) / 되돌려 놓기 (`fq_release`):** 오래된 순으로 incoming 파일을
+  읽어 보며 술어가 받는 첫 메시지만 claim한다(상관 ID·지정 시각·만료 같은 응용 조건). 매번 새로 나열하고 후보마다
+  읽으므로 `fq_claim`보다 비싸다. `fq_release`는 claim을 원래 이름 그대로 incoming에 돌려놓는다(attempt·순서 유지,
+  들여다보기 용). 둘 다 claim 캐시를 비운다.
 
 ---
 

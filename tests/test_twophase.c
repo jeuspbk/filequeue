@@ -12,6 +12,12 @@ static int fails = 0;
     else      { printf("  [FAIL] %s\n", msg); fails++; } \
 } while (0)
 
+static int want_k2(const void *data, size_t len, void *ud)
+{
+    (void)ud;
+    return len == 2 && memcmp(data, "k2", 2) == 0;
+}
+
 static int count_cb(const char *name, void *ud)
 {
     (void)name;
@@ -92,6 +98,24 @@ int main(int argc, char **argv)
     int ndead = 0;
     CHECK(fq_fs_list(dead, count_cb, &ndead) == FQ_OK && ndead == 1, "dead/에 하나");
     CHECK(fq_return(q, f3, 0) == FQ_ENOENT, "없는 파일을 되돌림: FQ_ENOENT (멱등)");
+
+    printf("[6] fq_consume_if / fq_release\n");
+    CHECK(fq_publish(q, "k1", 2, NULL) == FQ_OK && fq_publish(q, "k2", 2, NULL) == FQ_OK &&
+          fq_publish(q, "k3", 2, NULL) == FQ_OK, "publish k1 k2 k3");
+    fq_msg *s = NULL;
+    CHECK(fq_consume_if(q, want_k2, NULL, &s) == FQ_OK && s && memcmp(s->data, "k2", 2) == 0,
+          "k2만 골라 claim");
+    if (s) fq_ack(q, s);
+    CHECK(fq_consume_if(q, want_k2, NULL, &s) == FQ_EEMPTY, "k2는 더 없음: FQ_EEMPTY");
+    fq_msg *p = NULL;
+    CHECK(fq_consume(q, &p) == FQ_OK && p && memcmp(p->data, "k1", 2) == 0, "들여다보기: k1 claim");
+    uint32_t pa = p ? p->attempt : 99;
+    CHECK(p && fq_release(q, p) == FQ_OK, "release");
+    CHECK(fq_consume(q, &p) == FQ_OK && p && memcmp(p->data, "k1", 2) == 0 && p->attempt == pa,
+          "release 뒤에도 k1이 맨 앞, attempt 그대로");
+    if (p) fq_ack(q, p);
+    CHECK(fq_consume(q, &p) == FQ_OK && p && memcmp(p->data, "k3", 2) == 0, "그다음 k3");
+    if (p) fq_ack(q, p);
 
     fq_close(q);
     printf("%s (%d fail)\n", fails ? "FAILED" : "OK", fails);
