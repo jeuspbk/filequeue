@@ -52,11 +52,37 @@ void fq_close(fq_queue *q)
 
 /* ---- Producer ---- */
 
+/* 메시지명에 쓸 시각(ms). DESIGN.md §4-4.
+ * 로컬 벽시계에 "공유 FS 시각 - 로컬 벽시계" 오프셋을 더해 모든 발행 노드가 같은 시계(FS)를
+ * 기준으로 이름을 붙이게 한다. 오프셋은 FQ_CLOCK_SYNC_MS마다 한 번만 재서 발행 비용을 늘리지 않는다.
+ * 재동기에 실패하면 직전 오프셋을 유지한다(처음부터 실패하면 0 = 순수 벽시계).
+ * 마지막으로 발급한 값보다 작아지면 +1로 밀어 한 프로세스 안에서는 절대 역행하지 않는다. */
+static uint64_t msg_clock_ms(fq_queue *q)
+{
+    uint64_t wall = fq_now_wall_ms();
+
+    if (q->clock_next_sync_ms == 0 || wall >= q->clock_next_sync_ms ||
+        wall + FQ_CLOCK_SYNC_MS < q->clock_next_sync_ms /* 로컬 시계가 크게 뒤로 감 */) {
+        char tmp_dir[1280];
+        fq_path(tmp_dir, sizeof(tmp_dir), q->root, FQ_DIR_TMP, NULL);
+        uint64_t fs_now = 0;
+        if (fq_fs_now_ms(tmp_dir, &fs_now) == FQ_OK)
+            q->clock_offset_ms = (int64_t)fs_now - (int64_t)wall;
+        q->clock_next_sync_ms = wall + FQ_CLOCK_SYNC_MS;
+    }
+
+    int64_t t = (int64_t)wall + q->clock_offset_ms;
+    uint64_t now = t > 0 ? (uint64_t)t : 0;
+    if (now <= q->last_msg_ms) now = q->last_msg_ms + 1;
+    q->last_msg_ms = now;
+    return now;
+}
+
 /* 최종 메시지명: <epoch_ms>-<seq>-<producer>-<id>[.<stream>].msg
- * 앞쪽 시간+seq 로 best-effort FIFO 정렬. */
+ * 앞쪽 시간+seq 로 best-effort FIFO 정렬. 시각은 msg_clock_ms (FS 시각 기준 보정값). */
 static void new_msg_name(fq_queue *q, const char *id, const char *stream_key, char *msg_name, size_t n)
 {
-    uint64_t now = fq_now_wall_ms();
+    uint64_t now = msg_clock_ms(q);
     uint32_t seq = ++q->seq;
     if (stream_key && stream_key[0])
         snprintf(msg_name, n, "%016llu-%06u-%s-%s.%s.msg",

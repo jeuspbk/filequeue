@@ -46,6 +46,10 @@ add_executable(test_twophase tests/test_twophase.c)
 target_link_libraries(test_twophase filequeue)
 add_test(NAME twophase COMMAND test_twophase)
 
+add_executable(test_clock tests/test_clock.c)
+target_link_libraries(test_clock filequeue)
+add_test(NAME clock COMMAND test_clock)
+
 # 다중 프로세스 드라이버 (CLI 예제 겸 동시성/failover 테스트용)
 add_executable(fq_producer examples/fq_producer.c)
 target_link_libraries(fq_producer filequeue)
