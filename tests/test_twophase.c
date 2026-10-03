@@ -76,6 +76,11 @@ int main(int argc, char **argv)
     CHECK(fq_consume(q, &m3) == FQ_OK && m3 && fq_ack(q, m3) == FQ_OK, "nack한 것을 다시 받아 ack");
 
     printf("[5] fq_return: nack처럼 attempt+1, 한도면 dead/\n");
+    /* 같은 디렉터리로 재실행해도 통과하도록 dead/는 전후 차이로 센다 (이전 실행 잔여물 무시) */
+    char dead[600];
+    snprintf(dead, sizeof(dead), "%s/dead", qroot);
+    int ndead_before = 0;
+    fq_fs_list(dead, count_cb, &ndead_before);
     CHECK(fq_publish(q, "r", 1, NULL) == FQ_OK, "publish");
     char f3[600];
     snprintf(f3, sizeof(f3), "%s/d2", stage);
@@ -93,10 +98,8 @@ int main(int argc, char **argv)
         if (++rounds > FQ_MAX_ATTEMPTS + 1) { ok = 0; break; }
     }
     CHECK(ok && rounds == FQ_MAX_ATTEMPTS, "FQ_MAX_ATTEMPTS번 되돌린 뒤 큐에서 사라짐");
-    char dead[600];
-    snprintf(dead, sizeof(dead), "%s/dead", qroot);
     int ndead = 0;
-    CHECK(fq_fs_list(dead, count_cb, &ndead) == FQ_OK && ndead == 1, "dead/에 하나");
+    CHECK(fq_fs_list(dead, count_cb, &ndead) == FQ_OK && ndead == ndead_before + 1, "dead/에 하나 추가");
     CHECK(fq_return(q, f3, 0) == FQ_ENOENT, "없는 파일을 되돌림: FQ_ENOENT (멱등)");
 
     printf("[6] fq_consume_if / fq_release\n");

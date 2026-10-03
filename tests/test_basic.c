@@ -22,6 +22,14 @@ int main(int argc, char **argv)
     CHECK(fq_open(root, "nodeA", &q) == FQ_OK && q != NULL, "fq_open");
     if (!q) return 1;
 
+    /* 같은 디렉터리로 곧바로 재실행해도 통과하도록, 이전 실행이 남긴 리스를 만료시킨다
+     * (리스 15초 안에 다시 돌리면 nodeA가 리더십을 못 얻는다). 테스트 전용 조작. */
+    {
+        char li[1280];
+        fq_path(li, sizeof(li), root, FQ_LEADER_INFO, NULL);
+        fq_fs_write_sync(li, "none 0 0\n", 9);
+    }
+
     /* 발행 3건 */
     printf("[1] 발행\n");
     CHECK(fq_publish(q, "msg-A", 5, NULL) == FQ_OK, "publish A");
