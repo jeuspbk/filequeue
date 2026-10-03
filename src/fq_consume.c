@@ -27,10 +27,36 @@ static uint64_t renew_interval_ms(void)
     return iv < 50 ? 50 : iv;
 }
 
+/* 하트비트 1회: 리스 갱신 + 선임자/좀비가 남긴 stale inflight 회수.
+ * 복구를 인수 때 한 번만 하면, 그 뒤에 옛 token으로 claim한 좀비의 inflight는 다음 failover까지
+ * 방치된다. 하트비트마다 inflight를 한 번 훑어(대개 수 개) 회수한다. */
+static int heartbeat_now(fq_queue *q, uint64_t now)
+{
+    int rc = fq_renew_lease(q, &q->lead_lease);
+    if (rc == FQ_ENOLEADER) { q->lead_held = 0; return FQ_ELOCKED; } /* 리더십 상실 */
+    if (rc != FQ_OK)        return FQ_ERR;
+    q->lead_last_renew_ms = now;
+    q->lead_next_renew_ms = now + renew_interval_ms();
+    fq_recover_stale(q, &q->lead_lease);
+    return FQ_OK;
+}
+
 /* 리더십 획득·갱신. FQ_OK면 claim해도 된다. */
 static int lead(fq_queue *q)
 {
     uint64_t now = fq_now_wall_ms();
+
+    if (q->lead_held) {
+        /* 리스 자체 만료 감지: 마지막 성공 갱신 뒤 리스 길이가 지났다면(GC 멈춤, 절전, 긴 처리)
+         * FS상 리스는 만료됐고 다른 노드가 인수했을 수 있다. 다음 하트비트가 ENOLEADER를 받을
+         * 때까지 옛 token으로 claim을 계속하는 대신, 즉시 내려놓고 election.lock을 거쳐 다시 얻는다.
+         * 아무도 인수하지 않았다면 그대로 되찾는다(token만 +1). */
+        if (now >= q->lead_last_renew_ms + eff_lease_ms())
+            q->lead_held = 0;
+        /* 벽시계가 뒤로 점프해 다음 갱신 시각이 멀어진 경우도 즉시 갱신 */
+        else if (now + renew_interval_ms() < q->lead_next_renew_ms)
+            q->lead_next_renew_ms = now;
+    }
 
     if (!q->lead_held) {
         /* 대기 상태 → 리더십 획득 시도 */
@@ -39,16 +65,19 @@ static int lead(fq_queue *q)
         if (rc != FQ_OK)      return FQ_ERR;
 
         q->lead_held = 1;
+        q->lead_last_renew_ms = now;
         q->lead_next_renew_ms = now + renew_interval_ms();
         fq_recover_stale(q, &q->lead_lease);        /* 인수 직후 1회 회수 */
     } else if (now >= q->lead_next_renew_ms) {
-        /* 활성 리더 → 하트비트 갱신 */
-        int rc = fq_renew_lease(q, &q->lead_lease);
-        if (rc == FQ_ENOLEADER) { q->lead_held = 0; return FQ_ELOCKED; } /* 리더십 상실 */
-        if (rc != FQ_OK)        return FQ_ERR;
-        q->lead_next_renew_ms = now + renew_interval_ms();
+        return heartbeat_now(q, now);
     }
     return FQ_OK;
+}
+
+int fq_heartbeat(fq_queue *q)
+{
+    if (!q->lead_held) return FQ_ELOCKED;
+    return heartbeat_now(q, fq_now_wall_ms());
 }
 
 int fq_consume(fq_queue *q, fq_msg **out)

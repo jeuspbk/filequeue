@@ -84,7 +84,13 @@ fq_fs_posix.c / fq_fs_win32.c   (플랫폼 원자 연산 추상화)
   `fq_fs_rename`으로 원자 교체한다. 삭제 후 생성으로 바꾸면 그 사이에 읽는 노드가 "리더 없음"을 보고
   살아 있는 리더를 밀어낸다 (`tests/test_election.c`가 이 경합을 검사).
 - **fencing token**: 단조 증가. 모든 inflight에 stamp되며, 복구는 현재 token보다 낮은 것만 회수 →
-  멈췄다 깨어난 옛 리더(좀비)가 큐를 건드려도 무해.
+  멈췄다 깨어난 옛 리더(좀비)가 큐를 건드려도 무해. 복구(`fq_recover_stale`)는 인수 직후뿐 아니라
+  **하트비트마다** 돈다(좀비가 나중에 claim한 inflight도 다음 failover를 기다리지 않음).
+- **리스 자체 만료 감지**: `fq_consume`의 리더는 마지막 성공 갱신 뒤 리스 길이가 지나면(GC 멈춤, 절전,
+  긴 처리) 스스로 내려놓고 election.lock을 거쳐 다시 얻는다. 메시지 하나 처리가 리스보다 길 수 있으면
+  처리 중 `fq_heartbeat(q)`를 호출할 것.
+- **election.lock stale 회수**는 unlink가 아니라 고유 이름으로 rename한 뒤 새로 만든다. unlink면
+  동시에 회수하는 두 노드가 서로의 새 락을 지워 둘 다 임계 구역에 들어간다.
 - **시각**: 노드 간 clock skew를 피하려 `fq_fs_now_ms`(공유 FS에 임시 파일을 만들어 mtime을 읽음)를
   단일 시각 출처로 사용한다. 리스 비교에 로컬 wall-clock을 쓰지 말 것.
   메시지 파일명의 시각도 `fq_queue.c`의 `msg_clock_ms`가 FS 시각 오프셋(30초마다 재측정)을 더해
@@ -93,7 +99,11 @@ fq_fs_posix.c / fq_fs_win32.c   (플랫폼 원자 연산 추상화)
 ## 작업 시 주의점
 - 새 FS 연산이 필요하면 먼저 `fq_fs.h`에 인터페이스를 추가하고 **posix/win32 양쪽**을 구현할 것.
   큐 로직에서 OS API를 직접 호출하면 추상화가 깨진다.
-- 반환 규약: `FQ_OK`(0) 성공, 음수 오류 코드(`fq.h`). claim 경합 패배는 `FQ_ENOENT`/`FQ_EEXIST`로
+- 반환 규약: `FQ_OK`(0) 성공, 음수 오류 코드(`fq.h`). claim 경합 패배는 `FQ_ENOENT`로
   표현되며 정상 흐름이다 — 다음 후보로 넘어가야 한다.
+- 공유 디렉터리(`tmp/`, `control/`)에 만드는 임시 파일 이름에는 반드시 `node_id`를 넣을 것. `fq_gen_id`는
+  pid+salt+카운터+ms 조합이라 노드 간 유일성이 확률적이다. 메시지 이름은 이미 producer를 포함한다.
+- claim 뒤 읽기나 할당이 실패하면 반드시 `incoming/`으로 되돌린다. 내 token이 찍힌 inflight는 복구 대상이
+  아니라서 되돌리지 않으면 내가 죽을 때까지 멈춘다.
 - 대상 스토리지가 바뀌면 `test_atomicity`를 그 스토리지에서 먼저 돌려 rename/create/lock 원자성을
   확인할 것. 이 전제가 깨지면 큐 정확성이 보장되지 않는다 (`DESIGN.md` §0).

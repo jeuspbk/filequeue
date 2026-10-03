@@ -40,10 +40,18 @@ uint32_t fq_pid(void)
 void fq_gen_id(char *buf, size_t n)
 {
     static uint32_t ctr = 0;
+    static uint32_t salt = 0;
     uint64_t t = fq_now_wall_ms();
     uint32_t c = ++ctr;
-    /* 진짜 UUID는 아니지만 pid+seq+time 조합으로 노드 내/간 충돌 회피 (스캐폴드) */
-    snprintf(buf, n, "%08x%08x%08x", fq_pid(), c, (uint32_t)(t & 0xffffffffu));
+    /* pid+카운터+ms만으로는 pid가 같은 두 노드가 같은 ms에 같은 번째 id를 만들 수 있다
+     * (공유 tmp/·control/에서 파일명 충돌 → 덮어쓰기). 프로세스마다 한 번 정하는 salt
+     * (첫 호출 시각 해시 ^ 스택 주소(ASLR) ^ pid 해시)를 섞어 그 확률을 없앤다. */
+    if (salt == 0) {
+        uintptr_t a = (uintptr_t)&c;
+        salt = (uint32_t)(t * 2654435761ULL) ^ (uint32_t)(a >> 4) ^ (fq_pid() * 0x9E3779B1u);
+        if (salt == 0) salt = 1;
+    }
+    snprintf(buf, n, "%08x%08x%08x%08x", fq_pid(), salt, c, (uint32_t)(t & 0xffffffffu));
 }
 
 char *fq_strdup(const char *s)

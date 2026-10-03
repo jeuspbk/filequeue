@@ -83,6 +83,10 @@ int  fq_release(fq_queue *q, fq_msg *m);
 int  fq_consume(fq_queue *q, fq_msg **out);
 /* fq_consume과 같되 fq_claim_if로 고른다. */
 int  fq_consume_if(fq_queue *q, fq_want_fn want, void *ud, fq_msg **out);
+/* fq_consume 사용자용 하트비트. 메시지 하나를 처리하는 데 리스(FQ_LEASE_MS)보다 오래 걸릴 수
+ * 있으면 처리 도중 주기적으로 호출해 리스를 연장한다(즉시 갱신, 주기 무시).
+ * FQ_OK = 연장됨, FQ_ELOCKED = 리더가 아님(리더십을 잃었거나 아직 없음), FQ_ERR = 오류. */
+int  fq_heartbeat(fq_queue *q);
 
 /* ---- 2단계 발행 / 꺼내기 (트랜잭션 큐용) ----
  * 트랜잭션 관리자 쪽이 큐 밖(같은 파일시스템)의 파일에 메시지를 보관했다가

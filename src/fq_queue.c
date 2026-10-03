@@ -111,9 +111,10 @@ int fq_publish(fq_queue *q, const void *data, size_t len, const char *stream_key
     char id[64];
     fq_gen_id(id, sizeof(id));
 
-    /* 1) tmp에 기록 + fsync */
-    char tmp_name[128], tmp_path[1408];
-    snprintf(tmp_name, sizeof(tmp_name), "%s.tmp", id);
+    /* 1) tmp에 기록 + fsync. tmp/는 모든 발행 노드가 공유하므로 이름에 node_id를 넣어
+     *    다른 노드와 같은 임시 파일을 덮어쓰는 일(메시지 유실)을 구조적으로 막는다. */
+    char tmp_name[192], tmp_path[1408];
+    snprintf(tmp_name, sizeof(tmp_name), "%s-%s.tmp", q->node_id, id);
     fq_path(tmp_path, sizeof(tmp_path), q->root, FQ_DIR_TMP, tmp_name);
     if (fq_fs_write_sync(tmp_path, data, len) != FQ_OK) return FQ_ERR;
 
@@ -283,11 +284,13 @@ int fq_claim(fq_queue *q, const fq_lease *lease, fq_msg **out)
             if (rc == FQ_ENOENT) continue;                    /* 경합 패배/이미 처리됨 */
             if (rc != FQ_OK) return FQ_ERR;
 
+            /* rename은 됐는데 읽기/할당이 실패하면 내 token이 찍힌 파일이 inflight에 남는다.
+             * 내 token 이상은 복구 대상이 아니라 내가 죽을 때까지 멈추므로 즉시 되돌린다. */
             void *data = NULL; size_t len = 0;
-            if (fq_fs_read_file(dst, &data, &len) != FQ_OK) return FQ_ERR;
+            if (fq_fs_read_file(dst, &data, &len) != FQ_OK) { fq_fs_rename(dst, src); return FQ_ERR; }
 
             fq_msg *m = (fq_msg *)calloc(1, sizeof(*m));
-            if (!m) { free(data); return FQ_ERR; }
+            if (!m) { free(data); fq_fs_rename(dst, src); return FQ_ERR; }
             snprintf(m->name, sizeof(m->name), "%s", inf_name);
             m->data = data;
             m->len = len;
@@ -332,7 +335,7 @@ int fq_claim_if(fq_queue *q, const fq_lease *lease, fq_want_fn want, void *ud, f
         if (rc != FQ_OK) { free(data); result = FQ_ERR; break; }
 
         fq_msg *m = (fq_msg *)calloc(1, sizeof(*m));
-        if (!m) { free(data); result = FQ_ERR; break; }
+        if (!m) { free(data); fq_fs_rename(dst, src); result = FQ_ERR; break; } /* 고아 inflight 방지 */
         snprintf(m->name, sizeof(m->name), "%s", inf_name);
         m->data = data;
         m->len = len;

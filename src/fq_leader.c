@@ -59,10 +59,10 @@ static int write_leader_info(fq_queue *q, const char *id,
     int n = snprintf(line, sizeof(line), "%s %llu %llu\n",
                      id, (unsigned long long)token, (unsigned long long)expiry);
 
-    char tmp_name[128], tmp_path[1408], dst[1280];
+    char tmp_name[256], tmp_path[1408], dst[1280];
     char gid[64];
     fq_gen_id(gid, sizeof(gid));
-    snprintf(tmp_name, sizeof(tmp_name), "leader-%s.tmp", gid);
+    snprintf(tmp_name, sizeof(tmp_name), "leader-%s-%s.tmp", q->node_id, gid);
     fq_path(tmp_path, sizeof(tmp_path), q->root, FQ_DIR_CONTROL, tmp_name);
     fq_path(dst, sizeof(dst), q->root, FQ_DIR_CONTROL, "leader.info");
 
@@ -99,12 +99,19 @@ int fq_acquire_leadership(fq_queue *q, fq_lease *lease)
 
     int rc = fq_fs_create_new(lock_path);
     if (rc == FQ_EEXIST) {
-        /* 선출 중 크래시로 남은 stale lock 회수 */
+        /* 선출 중 크래시로 남은 stale lock 회수. unlink로 치우면 두 노드가 동시에 회수할 때
+         * A가 지우고 새로 만든 락을 B가 다시 지워 둘 다 임계 구역에 들어간다. 대신 고유 이름으로
+         * rename한다: rename은 한 쪽만 성공하므로 그 노드만 새 락을 만들고, 진 쪽은 양보한다. */
         uint64_t lock_mtime = 0;
         if (fq_fs_mtime_ms(lock_path, &lock_mtime) == FQ_OK &&
             now > lock_mtime + FQ_ELECTION_STALE_MS) {
-            fq_fs_unlink(lock_path);
-            rc = fq_fs_create_new(lock_path);
+            char gid[64], stale[1408];
+            fq_gen_id(gid, sizeof(gid));
+            snprintf(stale, sizeof(stale), "%s.stale-%s", lock_path, gid);
+            if (fq_fs_rename(lock_path, stale) == FQ_OK) {
+                fq_fs_unlink(stale);
+                rc = fq_fs_create_new(lock_path);
+            }
         }
     }
     if (rc != FQ_OK) return FQ_ELOCKED;

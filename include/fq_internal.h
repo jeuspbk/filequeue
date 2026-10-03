@@ -42,6 +42,9 @@ struct fq_queue {
     int      lead_held;            /* 현재 리더십 보유 여부 */
     fq_lease lead_lease;           /* 보유 중인 리스 */
     uint64_t lead_next_renew_ms;   /* 다음 하트비트 시각 (벽시계 ms) */
+    uint64_t lead_last_renew_ms;   /* 마지막으로 리스를 성공적으로 썼던 시각 (벽시계 ms).
+                                      이후 리스 길이만큼 지났으면 FS상 만료됐을 수 있으므로
+                                      리더십을 내려놓고 election.lock을 거쳐 다시 얻는다. */
 };
 
 /* ---- 유틸 (fq_util.c) ---- */
