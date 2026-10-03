@@ -58,8 +58,7 @@
   dead/           # DLQ: N회 재시도 실패한 poison 메시지
   control/
     election.lock # 리더 선출용 배타 생성 mutex (CREATE_NEW)
-    leader.info   # 현재 리더 id, fencing token, 리스 만료시각
-    heartbeat     # 리더가 주기적 갱신 (시각 단일 출처로 mtime 활용)
+    leader.info   # 현재 리더 id, fencing token, 리스 만료시각(FS 시각). 하트비트 = 이 파일의 원자 교체
 ```
 
 ### 메시지 파일명
@@ -72,15 +71,20 @@
 - 앞쪽 시간 + seq → 파일명 정렬만으로 best-effort FIFO. 시간은 로컬 벽시계가 아니라
   공유 FS 시각 기준 보정값(§4-4)
 - producer_id + uuid → 노드 간 조율 없이 전역 유일성 보장
+- stream_key가 있으면 `.msg` 앞에 `.<stream_key>`가 붙는다
+- producer_id(node_id)와 stream_key는 `[A-Za-z0-9._-]`만 허용하고 `__`를 금지한다(`FQ_EINVAL`).
+  공백은 leader.info 파싱을, `__`는 아래 `__t<token>` 파싱을, `/`는 경로를 깨뜨리기 때문
 
-inflight 파일명에는 소유권/펜싱 정보를 추가로 stamp 한다.
+재시도 횟수와 fencing token은 이름 끝에 접미사로 붙는다.
 
 ```
-<원래이름>.msg__<token>__<attempt>
+incoming/<이름>.msg[.a<attempt>]              # 되돌릴 때마다 .a<N> (최초 발행은 접미사 없음 = 0)
+inflight/<이름>.msg[.a<attempt>]__t<token>    # claim 시 리더 token을 stamp
 ```
 
-- `token`   : 리더의 fencing token (좀비 리더 식별용)
-- `attempt` : 재처리 시도 횟수 (DLQ 이동 판단용)
+- `attempt` : 재처리 시도 횟수. nack·stale 복구·fq_return이 +1 하여 incoming으로 되돌릴 때 붙인다.
+  `FQ_MAX_ATTEMPTS`에 닿으면 `dead/`로 간다 (DLQ 이동 판단용)
+- `token`   : 리더의 fencing token (좀비 리더 식별용). ack는 unlink, release는 접미사만 떼어 그대로 되돌림
 
 ---
 
@@ -102,10 +106,11 @@ inflight 파일명에는 소유권/펜싱 정보를 추가로 stamp 한다.
 
 ```
 1. SCAN   : incoming/ 나열 → 가장 오래된 파일 선택 (이름 정렬)
-2. CLAIM  : rename incoming/<name>.msg
-                   → inflight/<name>.msg__<token>__<attempt>
+2. CLAIM  : rename incoming/<name>
+                   → inflight/<name>__t<token>      (<name>은 .a<N> 접미사를 가질 수 있음)
             - rename은 원자적이라, 경쟁해도 단 하나만 성공
-            - 실패(파일 없음) → 다음 파일로
+            - 실패(파일 없음 = FQ_ENOENT) → 다음 파일로
+            - rename 뒤 읽기가 실패하면 즉시 incoming으로 되돌린다(내 token의 고아 inflight 방지)
 3. PROCESS: 메시지 처리 (소비자는 반드시 멱등)
 4. ACK    : inflight 파일 unlink → 더 이상 재처리 안 됨
 ```
@@ -130,8 +135,13 @@ inflight 파일명에는 소유권/펜싱 정보를 추가로 stamp 한다.
 ### 4-1. 리스(lease) 기반 리더 선출
 
 - `leader.info` = `{ leader_id, fencing_token, lease_expiry }`
-- 리더는 주기적으로 `heartbeat`를 갱신하고 `lease_expiry`를 연장한다(하트비트).
-- 대기 노드는 `leader.info`를 폴링한다. **리스 만료가 관측되면** 인수 시도:
+- 리더는 주기적으로 `leader.info`를 다시 써서(tmp + 원자 교체) `lease_expiry`를 연장한다(하트비트).
+  별도 heartbeat 파일은 없다.
+- 대기 노드는 `leader.info`를 폴링한다. 폴링마다 FS 시각을 재면(파일 생성+stat+삭제) 공유 스토리지에
+  메타데이터 쓰기가 쏟아지므로, 먼저 **추정 FS 시각**(§4-4의 오프셋 캐시)으로 비교해 리스가 유효하면
+  파일을 만들지 않고 양보한다. 추정상 만료일 때만 실제 FS 시각을 잰다. 추정이 늦으면 인수가 최대
+  재동기 주기만큼 늦어질 뿐이고, 추정이 앞서면 실제 측정으로 넘어가므로 안전성은 그대로다.
+- **리스 만료가 관측되면** 인수 시도:
   1. `CREATE_NEW`로 `control/election.lock` 생성 시도 → 성공한 1개 노드만 선출 진행 (atomic create = mutex)
   2. 승자는 **락 안에서 `leader.info`를 다시 읽어** 리스가 여전히 만료 상태인지 재확인한다
      (락 밖에서 읽은 값으로 진행하면 차례로 락을 잡은 두 노드가 같은 token을 쓴다)
@@ -169,8 +179,8 @@ inflight 파일명에는 소유권/펜싱 정보를 추가로 stamp 한다.
 ### 4-4. 시계 문제 (노드 간 clock skew)
 
 리스 만료를 각 노드의 wall-clock으로 비교하면 시계 차이로 오작동.
-→ **공유 FS의 타임스탬프를 단일 시각 출처로 사용**: `heartbeat` 파일 mtime과, 임시 파일을 만들어
-읽은 "현재 FS 시각"을 비교. 모든 노드가 같은 시계(FS)를 보므로 skew 무관.
+→ **공유 FS의 타임스탬프를 단일 시각 출처로 사용**: 리스 만료시각을 FS 시각으로 기록하고, 판정할 때도
+임시 파일을 만들어 읽은 "현재 FS 시각"과 비교. 모든 노드가 같은 시계(FS)를 보므로 skew 무관.
 리스 길이는 하트비트 주기의 3~5배 + 여유로 설정.
 
 **메시지명의 시각도 같은 문제를 가진다.** 파일명 정렬이 곧 소비 순서이므로 발행 노드들의 벽시계가
@@ -186,7 +196,9 @@ inflight 파일명에는 소유권/펜싱 정보를 추가로 stamp 한다.
 ## 5. 부가 메커니즘
 
 - **Poison 메시지 / DLQ:** `attempt`가 N 초과 시 `dead/`로 이동(무한 재처리 루프 차단).
-- **GC:** `tmp/`의 임계시간 초과 고아 파일 정리(크래시한 발행 중 파일).
+- **GC:** 임계시간을 넘긴 크래시 잔재 정리. `tmp/`는 전부(발행 중 크래시), `control/`은 이름으로 골라
+  `.now-*`(FS 시각 측정), `leader-*.tmp`(leader.info 교체 중), `election.lock.stale-*`만. 살아 있는
+  `leader.info`·`election.lock`은 건드리지 않는다. 임계시간은 발행·하트비트 한 번보다 충분히 길게.
 - **폴링 vs 알림:** 베이스라인은 디렉터리 폴링(공유/네트워크 FS에서 가장 호환). 저지연이 필요하면
   Windows `ReadDirectoryChangesW`(로컬), Linux `inotify`를 최적화로 추가.
   단, 네트워크 공유에선 알림이 안 올 수 있으므로 폴링은 항상 유지.
@@ -209,26 +221,27 @@ inflight 파일명에는 소유권/펜싱 정보를 추가로 stamp 한다.
 
 ## 6. C API 스케치
 
-```c
-typedef struct fq_queue fq_queue;
-typedef struct fq_msg   fq_msg;
-typedef struct { char leader_id[64]; uint64_t token; } fq_lease;
+초기 스케치이며 실제 API의 기준은 `include/fq.h`다. 핵심만 요약한다.
 
+```c
 /* 공통 */
-int  fq_open(const char *root, fq_queue **out);
+int  fq_open(const char *root, const char *node_id /*nullable*/, fq_queue **out);
 void fq_close(fq_queue *q);
 
 /* Producer */
-int  fq_publish(fq_queue *q, const void *data, size_t len,
-                const char *stream_key /*nullable*/);
+int  fq_publish(fq_queue *q, const void *data, size_t len, const char *stream_key /*nullable*/);
 
-/* Consumer (리더십 보유 시에만 claim/ack) */
-int  fq_acquire_leadership(fq_queue *q, fq_lease *lease);  /* 선출 시도 */
-int  fq_renew_lease(fq_queue *q, fq_lease *lease);         /* 하트비트 */
-int  fq_recover_stale(fq_queue *q, const fq_lease *lease); /* 선임자 inflight 회수 */
-int  fq_claim(fq_queue *q, const fq_lease *lease, fq_msg **out); /* NULL=비었음 */
-int  fq_ack(fq_queue *q, fq_msg *m);    /* inflight unlink */
-int  fq_nack(fq_queue *q, fq_msg *m);   /* 즉시 requeue */
+/* Consumer: 통합 wrapper (리더십·하트비트·stale 복구 자동) */
+int  fq_consume(fq_queue *q, fq_msg **out);   /* FQ_OK / FQ_EEMPTY / FQ_ELOCKED(대기) */
+int  fq_heartbeat(fq_queue *q);               /* 긴 처리 중 리스 연장 */
+int  fq_ack(fq_queue *q, fq_msg *m);          /* inflight unlink */
+int  fq_nack(fq_queue *q, fq_msg *m);         /* 즉시 requeue (attempt+1, 한도면 dead/) */
+
+/* Consumer: 저수준 (직접 리더십 관리) */
+int  fq_acquire_leadership(fq_queue *q, fq_lease *lease);
+int  fq_renew_lease(fq_queue *q, fq_lease *lease);
+int  fq_recover_stale(fq_queue *q, const fq_lease *lease);
+int  fq_claim(fq_queue *q, const fq_lease *lease, fq_msg **out);   /* FQ_EEMPTY = 비었음 */
 ```
 
 ### Win32 ↔ POSIX 원자 연산 매핑 (플랫폼 추상화 계층 `fq_fs`로 격리)
@@ -236,7 +249,8 @@ int  fq_nack(fq_queue *q, fq_msg *m);   /* 즉시 requeue */
 | 연산 | Win32 | POSIX |
 |---|---|---|
 | 배타 생성 (mutex) | `CreateFile(CREATE_NEW)` | `open(O_CREAT\|O_EXCL)` |
-| 원자 rename | `MoveFileExW(.., MOVEFILE_WRITE_THROUGH)` (대상 유니크) | `rename(2)` |
+| 원자 rename (큐 내부 전이, leader.info 교체) | `MoveFileExA(.., MOVEFILE_REPLACE_EXISTING\|MOVEFILE_WRITE_THROUGH)` | `rename(2)` |
+| rename, 대상 있으면 실패 (`fq_take`만) | `MoveFileExA(.., MOVEFILE_WRITE_THROUGH)` | `link` + `unlink` (두 단계) |
 | 파일 fsync | `FlushFileBuffers` / `FILE_FLAG_WRITE_THROUGH` | `fsync` |
 | 디렉터리 영속화 | NTFS 저널 (별도 dir fsync API 없음, write-through로 대체) | `fsync(dir_fd)` |
 | 권고 락 (선택) | `LockFileEx(EXCLUSIVE\|FAIL_IMMEDIATELY)` | `fcntl(F_SETLK)` / `flock` |

@@ -52,9 +52,9 @@ int fq_fs_write_sync(const char *path, const void *data, size_t len)
         p += wrote;
         left -= wrote;
     }
-    FlushFileBuffers(h);
+    BOOL flushed = FlushFileBuffers(h);
     CloseHandle(h);
-    return FQ_OK;
+    return flushed ? FQ_OK : FQ_ERR;
 }
 
 int fq_fs_rename(const char *src, const char *dst)
@@ -91,7 +91,8 @@ int fq_fs_create_new(const char *path)
 int fq_fs_unlink(const char *path)
 {
     if (DeleteFileA(path)) return FQ_OK;
-    return (GetLastError() == ERROR_FILE_NOT_FOUND) ? FQ_ENOENT : FQ_ERR;
+    DWORD e = GetLastError();
+    return (e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND) ? FQ_ENOENT : FQ_ERR;
 }
 
 int fq_fs_exists(const char *path)
@@ -105,10 +106,15 @@ int fq_fs_exists(const char *path)
 
 int fq_fs_read_file(const char *path, void **out, size_t *out_len)
 {
-    HANDLE h = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, NULL,
+    /* FILE_SHARE_DELETE: 읽는 중에도 다른 쪽이 rename/unlink할 수 있어야 한다(POSIX와 같은 의미).
+     * 없으면 fq_claim_if가 후보를 읽는 동안 리더의 claim rename이 공유 위반으로 실패한다. */
+    HANDLE h = CreateFileA(path, GENERIC_READ,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
                            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (h == INVALID_HANDLE_VALUE)
-        return (GetLastError() == ERROR_FILE_NOT_FOUND) ? FQ_ENOENT : FQ_ERR;
+    if (h == INVALID_HANDLE_VALUE) {
+        DWORD e = GetLastError();
+        return (e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND) ? FQ_ENOENT : FQ_ERR;
+    }
 
     LARGE_INTEGER sz;
     if (!GetFileSizeEx(h, &sz)) { CloseHandle(h); return FQ_ERR; }
@@ -143,16 +149,26 @@ int fq_fs_list(const char *dir, fq_dir_cb cb, void *ud)
 
     WIN32_FIND_DATAA fd;
     HANDLE h = FindFirstFileA(pat, &fd);
-    if (h == INVALID_HANDLE_VALUE)
-        return (GetLastError() == ERROR_FILE_NOT_FOUND) ? FQ_OK : FQ_ERR;
+    if (h == INVALID_HANDLE_VALUE) {
+        DWORD e = GetLastError();
+        /* "<dir>/*"는 빈 디렉터리에서도 . .. 를 돌려주므로 NOT_FOUND는 디렉터리 자체가 없다는 뜻 */
+        return (e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND) ? FQ_ENOENT : FQ_ERR;
+    }
 
-    do {
-        if (strcmp(fd.cFileName, ".") == 0 || strcmp(fd.cFileName, "..") == 0) continue;
-        if (cb(fd.cFileName, ud) != 0) break;
-    } while (FindNextFileA(h, &fd));
+    int rc = FQ_OK;
+    for (;;) {
+        if (strcmp(fd.cFileName, ".") != 0 && strcmp(fd.cFileName, "..") != 0) {
+            int r = cb(fd.cFileName, ud);
+            if (r != 0) { rc = r; break; }
+        }
+        if (!FindNextFileA(h, &fd)) {
+            if (GetLastError() != ERROR_NO_MORE_FILES) rc = FQ_ERR;
+            break;
+        }
+    }
 
     FindClose(h);
-    return FQ_OK;
+    return rc;
 }
 
 int fq_fs_trylock(const char *path, fq_lock **out)
@@ -194,8 +210,10 @@ static uint64_t filetime_to_ms(FILETIME ft)
 int fq_fs_mtime_ms(const char *path, uint64_t *out_ms)
 {
     WIN32_FILE_ATTRIBUTE_DATA d;
-    if (!GetFileAttributesExA(path, GetFileExInfoStandard, &d))
-        return (GetLastError() == ERROR_FILE_NOT_FOUND) ? FQ_ENOENT : FQ_ERR;
+    if (!GetFileAttributesExA(path, GetFileExInfoStandard, &d)) {
+        DWORD e = GetLastError();
+        return (e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND) ? FQ_ENOENT : FQ_ERR;
+    }
     *out_ms = filetime_to_ms(d.ftLastWriteTime);
     return FQ_OK;
 }

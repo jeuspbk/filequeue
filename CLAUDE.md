@@ -71,6 +71,8 @@ fq_fs_posix.c / fq_fs_win32.c   (플랫폼 원자 연산 추상화)
   `incoming/`에 되돌림 → 재처리(중복 가능, 유실 없음). **소비자는 반드시 멱등**이어야 한다.
 
 ### 파일명에 인코딩된 상태 (단, 별도 메타파일 없음)
+- `node_id`·`stream_key`는 `fq_valid_ident`로 검증한다(`[A-Za-z0-9._-]`, `__` 금지, 어기면 `FQ_EINVAL`).
+  이 규칙이 `__t<token>`·`.a<N>` 파싱과 leader.info의 공백 구분 포맷을 지탱하므로 완화하지 말 것.
 - 메시지명: `<epoch_ms>-<seq>-<producer>-<id>[.<stream>].msg` — 앞쪽 시간으로 best-effort FIFO 정렬.
 - inflight: `<메시지명>__t<token>` — `token`은 fencing용 리더 토큰.
 - 재시도: `incoming`으로 되돌릴 때 `.a<N>` 접미사로 attempt 카운트. `FQ_MAX_ATTEMPTS` 초과 시 `dead/`.
@@ -99,6 +101,11 @@ fq_fs_posix.c / fq_fs_win32.c   (플랫폼 원자 연산 추상화)
 ## 작업 시 주의점
 - 새 FS 연산이 필요하면 먼저 `fq_fs.h`에 인터페이스를 추가하고 **posix/win32 양쪽**을 구현할 것.
   큐 로직에서 OS API를 직접 호출하면 추상화가 깨진다.
+- `fq_fs_list` 콜백이 0이 아닌 값을 돌려주면 나열이 멈추고 그 값이 그대로 반환된다. 오류를 알릴 때는
+  음수 `FQ_*` 코드를 돌려줄 것(0이 아닌 양수로 "그냥 멈춤"을 표현하면 호출자는 오류로 본다).
+- 잦은 경로(대기 노드 폴링, 메시지 이름)에는 `fq_fs_clock_est_ms`(추정 FS 시각, 30초마다 재측정)를,
+  정확해야 하는 판정(리스 인수, 갱신)에는 `fq_fs_now_ms`를 쓴다.
+- 리스 길이는 `fq_lease_ms()` 하나로 읽는다(`FQ_LEASE_MS_OVERRIDE` 반영). 복제하지 말 것.
 - 반환 규약: `FQ_OK`(0) 성공, 음수 오류 코드(`fq.h`). claim 경합 패배는 `FQ_ENOENT`로
   표현되며 정상 흐름이다 — 다음 후보로 넘어가야 한다.
 - 공유 디렉터리(`tmp/`, `control/`)에 만드는 임시 파일 이름에는 반드시 `node_id`를 넣을 것. `fq_gen_id`는

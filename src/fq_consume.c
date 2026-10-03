@@ -9,21 +9,10 @@
 
 #include <stdlib.h>
 
-/* 유효 리스 시간(ms). fq_leader.c 와 동일하게 FQ_LEASE_MS_OVERRIDE 를 존중한다. */
-static uint64_t eff_lease_ms(void)
-{
-    const char *e = getenv("FQ_LEASE_MS_OVERRIDE");
-    if (e && e[0]) {
-        unsigned long long v = strtoull(e, NULL, 10);
-        if (v > 0) return (uint64_t)v;
-    }
-    return FQ_LEASE_MS;
-}
-
 /* 하트비트 주기 = 리스의 1/3 (최소 50ms). 리스 만료 전에 갱신되도록. */
 static uint64_t renew_interval_ms(void)
 {
-    uint64_t iv = eff_lease_ms() / 3;
+    uint64_t iv = fq_lease_ms() / 3;
     return iv < 50 ? 50 : iv;
 }
 
@@ -51,7 +40,7 @@ static int lead(fq_queue *q)
          * FS상 리스는 만료됐고 다른 노드가 인수했을 수 있다. 다음 하트비트가 ENOLEADER를 받을
          * 때까지 옛 token으로 claim을 계속하는 대신, 즉시 내려놓고 election.lock을 거쳐 다시 얻는다.
          * 아무도 인수하지 않았다면 그대로 되찾는다(token만 +1). */
-        if (now >= q->lead_last_renew_ms + eff_lease_ms())
+        if (now >= q->lead_last_renew_ms + fq_lease_ms())
             q->lead_held = 0;
         /* 벽시계가 뒤로 점프해 다음 갱신 시각이 멀어진 경우도 즉시 갱신 */
         else if (now + renew_interval_ms() < q->lead_next_renew_ms)

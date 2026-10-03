@@ -49,6 +49,9 @@ struct fq_queue {
 
 /* ---- 유틸 (fq_util.c) ---- */
 uint64_t fq_now_wall_ms(void);                 /* 벽시계 ms (메시지 정렬용) */
+uint64_t fq_lease_ms(void);                    /* 유효 리스(ms). FQ_LEASE_MS_OVERRIDE 존중 */
+/* 파일명에 들어가는 식별자 검증: [A-Za-z0-9._-], 1..max_len자, "__" 금지. 1=유효 */
+int      fq_valid_ident(const char *s, size_t max_len);
 uint32_t fq_pid(void);
 void     fq_gen_id(char *buf, size_t n);       /* 유일 토큰 hex (pid+seq+time 기반) */
 char    *fq_strdup(const char *s);
@@ -62,5 +65,10 @@ void fq_parse_attempt(const char *name, char *base_out, size_t base_n, uint32_t 
 
 /* inflight 이름 "<logical>__t<token>" 에서 token을 파싱. 실패 시 0 반환, logical_out 채움. */
 uint64_t fq_parse_inflight(const char *name, char *logical_out, size_t logical_n);
+
+/* ---- FS 시각 추정 (fq_queue.c) ----
+ * 로컬 벽시계 + (FS 시각 - 벽시계) 오프셋. 오프셋은 FQ_CLOCK_SYNC_MS마다 fq_fs_now_ms로 다시 잰다.
+ * FS에 파일을 만들지 않으므로 잦은 호출에 쓴다. 정확해야 하는 판정(리스 인수)에는 쓰지 말 것. */
+uint64_t fq_fs_clock_est_ms(fq_queue *q);
 
 #endif /* FQ_INTERNAL_H */

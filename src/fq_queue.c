@@ -21,13 +21,16 @@ int fq_open(const char *root, const char *node_id, fq_queue **out)
 
     /* node_id: 인자 우선, 없으면 환경변수 FQ_NODE_ID, 그것도 없으면 node-<pid> */
     if (node_id && node_id[0]) {
+        if (!fq_valid_ident(node_id, sizeof(q->node_id) - 1)) { free(q); return FQ_EINVAL; }
         snprintf(q->node_id, sizeof(q->node_id), "%s", node_id);
     } else {
         const char *env = getenv("FQ_NODE_ID");
-        if (env && env[0])
+        if (env && env[0]) {
+            if (!fq_valid_ident(env, sizeof(q->node_id) - 1)) { free(q); return FQ_EINVAL; }
             snprintf(q->node_id, sizeof(q->node_id), "%s", env);
-        else
+        } else {
             snprintf(q->node_id, sizeof(q->node_id), "node-%u", fq_pid());
+        }
     }
 
     /* 하위 디렉터리 생성 */
@@ -52,12 +55,11 @@ void fq_close(fq_queue *q)
 
 /* ---- Producer ---- */
 
-/* 메시지명에 쓸 시각(ms). DESIGN.md §4-4.
- * 로컬 벽시계에 "공유 FS 시각 - 로컬 벽시계" 오프셋을 더해 모든 발행 노드가 같은 시계(FS)를
- * 기준으로 이름을 붙이게 한다. 오프셋은 FQ_CLOCK_SYNC_MS마다 한 번만 재서 발행 비용을 늘리지 않는다.
- * 재동기에 실패하면 직전 오프셋을 유지한다(처음부터 실패하면 0 = 순수 벽시계).
- * 마지막으로 발급한 값보다 작아지면 +1로 밀어 한 프로세스 안에서는 절대 역행하지 않는다. */
-static uint64_t msg_clock_ms(fq_queue *q)
+/* 추정 FS 시각(ms). DESIGN.md §4-4.
+ * 로컬 벽시계에 "공유 FS 시각 - 로컬 벽시계" 오프셋을 더한다. 오프셋은 FQ_CLOCK_SYNC_MS마다
+ * 한 번만 재서(파일 생성+stat+삭제 1회) 호출 비용을 늘리지 않는다. 로컬 시계가 크게 뒤로 가면
+ * 즉시 다시 잰다. 재동기에 실패하면 직전 오프셋을 유지한다(처음부터 실패하면 0 = 순수 벽시계). */
+uint64_t fq_fs_clock_est_ms(fq_queue *q)
 {
     uint64_t wall = fq_now_wall_ms();
 
@@ -72,7 +74,15 @@ static uint64_t msg_clock_ms(fq_queue *q)
     }
 
     int64_t t = (int64_t)wall + q->clock_offset_ms;
-    uint64_t now = t > 0 ? (uint64_t)t : 0;
+    return t > 0 ? (uint64_t)t : 0;
+}
+
+/* 메시지명에 쓸 시각(ms): 추정 FS 시각 + 단조 보정.
+ * 모든 발행 노드가 같은 시계(FS)를 기준으로 이름을 붙이고, 마지막으로 발급한 값보다 작아지면
+ * +1로 밀어 한 프로세스 안에서는 절대 역행하지 않는다. */
+static uint64_t msg_clock_ms(fq_queue *q)
+{
+    uint64_t now = fq_fs_clock_est_ms(q);
     if (now <= q->last_msg_ms) now = q->last_msg_ms + 1;
     q->last_msg_ms = now;
     return now;
@@ -106,8 +116,12 @@ static void fsync_incoming(fq_queue *q)
     fq_fs_fsync_dir(inc_dir);
 }
 
+#define FQ_STREAM_KEY_MAX 127
+
 int fq_publish(fq_queue *q, const void *data, size_t len, const char *stream_key)
 {
+    if (stream_key && stream_key[0] && !fq_valid_ident(stream_key, FQ_STREAM_KEY_MAX))
+        return FQ_EINVAL;
     char id[64];
     fq_gen_id(id, sizeof(id));
 
@@ -135,6 +149,8 @@ int fq_publish(fq_queue *q, const void *data, size_t len, const char *stream_key
 
 int fq_adopt(fq_queue *q, const char *path, const char *stream_key)
 {
+    if (stream_key && stream_key[0] && !fq_valid_ident(stream_key, FQ_STREAM_KEY_MAX))
+        return FQ_EINVAL;
     char id[64];
     fq_gen_id(id, sizeof(id));
     char msg_path[1408];
@@ -200,17 +216,21 @@ int fq_return(fq_queue *q, const char *path, uint32_t attempt)
 /* incoming 나열을 모아 가장 오래된 것부터 시도하기 위한 수집기 */
 typedef struct { char **v; size_t n, cap; } strvec;
 
+/* 메모리 부족이면 FQ_ERR로 나열을 중단한다 → fq_fs_list가 그 값을 돌려준다.
+ * (예전에는 strdup 실패 시 NULL을 넣어 qsort/strcmp에서 죽었다.) */
 static int collect_cb(const char *name, void *ud)
 {
     strvec *sv = (strvec *)ud;
     if (sv->n == sv->cap) {
         size_t nc = sv->cap ? sv->cap * 2 : 32;
         char **nv = (char **)realloc(sv->v, nc * sizeof(char *));
-        if (!nv) return 1; /* 중단 */
+        if (!nv) return FQ_ERR;
         sv->v = nv;
         sv->cap = nc;
     }
-    sv->v[sv->n++] = fq_strdup(name);
+    char *d = fq_strdup(name);
+    if (!d) return FQ_ERR;
+    sv->v[sv->n++] = d;
     return 0;
 }
 
@@ -411,13 +431,23 @@ void fq_msg_free(fq_msg *m)
 
 /* ---- GC ---- */
 
-typedef struct { fq_queue *q; uint64_t cutoff; int removed; } gc_ctx;
+typedef struct { fq_queue *q; const char *sub; uint64_t cutoff; int removed; } gc_ctx;
+
+static int has_prefix(const char *s, const char *p) { return strncmp(s, p, strlen(p)) == 0; }
 
 static int gc_cb(const char *name, void *ud)
 {
     gc_ctx *c = (gc_ctx *)ud;
+    /* control/에는 살아 있는 leader.info·election.lock이 있으므로 크래시 잔재 이름만 대상:
+     * FS 시각 측정 파일(.now-*), leader.info 교체용 임시 파일(leader-*.tmp), 회수한 stale 락. */
+    if (strcmp(c->sub, FQ_DIR_CONTROL) == 0 &&
+        !has_prefix(name, ".now-") &&
+        !(has_prefix(name, "leader-") && strstr(name, ".tmp")) &&
+        !has_prefix(name, "election.lock.stale-"))
+        return 0;
+
     char path[1408];
-    fq_path(path, sizeof(path), c->q->root, FQ_DIR_TMP, name);
+    fq_path(path, sizeof(path), c->q->root, c->sub, name);
 
     uint64_t mt = 0;
     if (fq_fs_mtime_ms(path, &mt) == FQ_OK && mt < c->cutoff) {
@@ -434,7 +464,12 @@ int fq_gc(fq_queue *q, uint64_t tmp_max_age_ms)
     uint64_t now = 0;
     if (fq_fs_now_ms(tmp_dir, &now) != FQ_OK) return FQ_ERR;
 
-    gc_ctx c = { q, now > tmp_max_age_ms ? now - tmp_max_age_ms : 0, 0 };
+    gc_ctx c = { q, FQ_DIR_TMP, now > tmp_max_age_ms ? now - tmp_max_age_ms : 0, 0 };
     if (fq_fs_list(tmp_dir, gc_cb, &c) != FQ_OK) return FQ_ERR;
+
+    char ctrl_dir[1280];
+    fq_path(ctrl_dir, sizeof(ctrl_dir), q->root, FQ_DIR_CONTROL, NULL);
+    c.sub = FQ_DIR_CONTROL;
+    if (fq_fs_list(ctrl_dir, gc_cb, &c) != FQ_OK) return FQ_ERR;
     return c.removed;
 }

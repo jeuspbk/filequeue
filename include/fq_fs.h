@@ -44,7 +44,9 @@ int  fq_fs_read_file(const char *path, void **out, size_t *out_len);
 /* 디렉터리 메타데이터 영속화. 미지원 플랫폼에서는 no-op. */
 int  fq_fs_fsync_dir(const char *path);
 
-/* 디렉터리 나열. '.' '..' 제외. cb가 0이 아닌 값을 반환하면 중단. */
+/* 디렉터리 나열. '.' '..' 제외. 반환: 끝까지 돌면 FQ_OK, cb가 0이 아닌 값을 반환하면 즉시 중단하고
+ * 그 값을 그대로 반환(오류 전달용으로 음수 FQ_* 코드를 쓸 것), 디렉터리가 없으면 FQ_ENOENT,
+ * 나열 도중 OS 오류면 FQ_ERR. */
 typedef int (*fq_dir_cb)(const char *name, void *ud);
 int  fq_fs_list(const char *dir, fq_dir_cb cb, void *ud);
 

@@ -111,6 +111,51 @@ int main(int argc, char **argv)
         }
     }
 
+    /* [5] 식별자 검증: 파일명·leader.info를 깨뜨리는 node_id / stream_key는 FQ_EINVAL */
+    printf("[5] node_id / stream_key 검증\n");
+    {
+        fq_queue *bad = NULL;
+        CHECK(fq_open(root, "node A", &bad) == FQ_EINVAL, "공백 node_id 거부");
+        CHECK(fq_open(root, "a__t5", &bad) == FQ_EINVAL, "\"__\" 포함 node_id 거부");
+        CHECK(fq_open(root, "a/b", &bad) == FQ_EINVAL, "'/' 포함 node_id 거부");
+        CHECK(fq_open(root, "0123456789012345678901234567890123456789012345678901234567890123",
+                      &bad) == FQ_EINVAL, "64자 node_id 거부");
+        CHECK(fq_publish(q, "x", 1, "a b") == FQ_EINVAL, "공백 stream_key 거부");
+        CHECK(fq_publish(q, "x", 1, "p__t1") == FQ_EINVAL, "\"__\" 포함 stream_key 거부");
+        CHECK(fq_publish(q, "x", 1, "order-42.v2") == FQ_OK, "정상 stream_key 허용");
+        /* 다음 실행을 위해 방금 발행한 것을 비운다. [4]에서 nodeB가 리스를 쥐고 있으므로 먼저 만료시킨다. */
+        char li[1408];
+        fq_path(li, sizeof(li), root, FQ_LEADER_INFO, NULL);
+        fq_fs_write_sync(li, "none 0 0\n", 9);
+        fq_lease l3;
+        if (fq_acquire_leadership(q, &l3) == FQ_OK) {
+            fq_msg *m = NULL;
+            if (fq_claim(q, &l3, &m) == FQ_OK) fq_ack(q, m);   /* 다음 실행을 위해 비움 */
+        }
+    }
+
+    /* [6] GC: control/의 크래시 잔재만 지우고 leader.info는 남긴다 */
+    printf("[6] GC가 control/ 잔재 정리\n");
+    {
+        const char *junk[] = { ".now-crashed", "leader-nodeZ-1.tmp", "election.lock.stale-1" };
+        char p[1408];
+        for (size_t i = 0; i < 3; i++) {
+            fq_path(p, sizeof(p), root, FQ_DIR_CONTROL, junk[i]);
+            fq_fs_write_sync(p, "", 0);
+        }
+        uint64_t t0 = fq_now_wall_ms();
+        while (fq_now_wall_ms() < t0 + 50) { }          /* mtime이 확실히 과거가 되도록 */
+        CHECK(fq_gc(q, 0) >= 3, "잔재 3개 이상 삭제");
+        int left = 0;
+        for (size_t i = 0; i < 3; i++) {
+            fq_path(p, sizeof(p), root, FQ_DIR_CONTROL, junk[i]);
+            left += fq_fs_exists(p) == 1;
+        }
+        CHECK(left == 0, "잔재가 남지 않음");
+        fq_path(p, sizeof(p), root, FQ_DIR_CONTROL, "leader.info");
+        CHECK(fq_fs_exists(p) == 1, "leader.info는 보존");
+    }
+
     fq_close(q);
     printf("\n== 결과: %s (%d 실패) ==\n", fails ? "FAIL" : "PASS", fails);
     return fails ? 1 : 0;

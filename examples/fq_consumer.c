@@ -8,7 +8,7 @@
  * 테스트에서 FQ_LEASE_MS_OVERRIDE 환경변수로 리스를 단축할 수 있다.
  */
 #include "fq.h"
-#include "fq_internal.h"   /* fq_now_wall_ms */
+#include "fq_internal.h"   /* fq_now_wall_ms, fq_lease_ms */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,13 +21,6 @@ static void sleep_ms(int ms) { Sleep(ms); }
 #  include <unistd.h>
 static void sleep_ms(int ms) { usleep(ms * 1000); }
 #endif
-
-static uint64_t lease_ms(void)
-{
-    const char *e = getenv("FQ_LEASE_MS_OVERRIDE");
-    if (e && e[0]) { unsigned long long v = strtoull(e, NULL, 10); if (v) return v; }
-    return FQ_LEASE_MS;
-}
 
 int main(int argc, char **argv)
 {
@@ -47,7 +40,7 @@ int main(int argc, char **argv)
     if (!log) { fprintf(stderr, "logfile 열기 실패\n"); fq_close(q); return 1; }
 
     /* 하트비트 주기 = 리스/3 (최소 50ms). 리스 만료 전에 갱신되도록. */
-    uint64_t renew_iv = lease_ms() / 3;
+    uint64_t renew_iv = fq_lease_ms() / 3;
     if (renew_iv < 50) renew_iv = 50;
 
     uint64_t deadline   = fq_now_wall_ms() + run_ms;

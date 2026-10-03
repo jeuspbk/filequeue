@@ -153,9 +153,13 @@ int fq_fs_list(const char *dir, fq_dir_cb cb, void *ud)
 
     struct dirent *e;
     int rc = FQ_OK;
-    while ((e = readdir(d)) != NULL) {
+    for (;;) {
+        errno = 0;
+        e = readdir(d);
+        if (!e) { if (errno != 0) rc = FQ_ERR; break; }   /* NULL + errno = 나열 오류 */
         if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) continue;
-        if (cb(e->d_name, ud) != 0) break;
+        int r = cb(e->d_name, ud);
+        if (r != 0) { rc = r; break; }
     }
     closedir(d);
     return rc;

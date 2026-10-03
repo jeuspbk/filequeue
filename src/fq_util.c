@@ -28,6 +28,31 @@ uint64_t fq_now_wall_ms(void)
 #endif
 }
 
+uint64_t fq_lease_ms(void)
+{
+    /* 테스트에서 FQ_LEASE_MS_OVERRIDE로 단축 가능 */
+    const char *e = getenv("FQ_LEASE_MS_OVERRIDE");
+    if (e && e[0]) {
+        unsigned long long v = strtoull(e, NULL, 10);
+        if (v > 0) return (uint64_t)v;
+    }
+    return FQ_LEASE_MS;
+}
+
+int fq_valid_ident(const char *s, size_t max_len)
+{
+    if (!s || !s[0]) return 0;
+    size_t n = 0;
+    for (const char *p = s; *p; p++, n++) {
+        char c = *p;
+        int ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                 (c >= '0' && c <= '9') || c == '.' || c == '-' || c == '_';
+        if (!ok) return 0;
+        if (c == '_' && p[1] == '_') return 0;
+    }
+    return n <= max_len;
+}
+
 uint32_t fq_pid(void)
 {
 #if defined(_WIN32) && !defined(__CYGWIN__)

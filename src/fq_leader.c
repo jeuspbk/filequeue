@@ -11,17 +11,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* 유효 리스 시간(ms). 테스트에서 FQ_LEASE_MS_OVERRIDE로 단축 가능. */
-static uint64_t fq_lease_ms(void)
-{
-    const char *e = getenv("FQ_LEASE_MS_OVERRIDE");
-    if (e && e[0]) {
-        unsigned long long v = strtoull(e, NULL, 10);
-        if (v > 0) return (uint64_t)v;
-    }
-    return FQ_LEASE_MS;
-}
-
 /* leader.info 읽기. 없으면 token=0, expiry=0, id="" 반환. */
 static int read_leader_info(fq_queue *q, char *id, size_t id_n,
                             uint64_t *token, uint64_t *expiry)
@@ -82,15 +71,23 @@ int fq_acquire_leadership(fq_queue *q, fq_lease *lease)
     char ctrl[1280];
     fq_path(ctrl, sizeof(ctrl), q->root, FQ_DIR_CONTROL, NULL);
 
-    uint64_t now = 0;
-    if (fq_fs_now_ms(ctrl, &now) != FQ_OK) return FQ_ERR;
-
     char cur_id[64]; uint64_t cur_token = 0, cur_expiry = 0;
     if (read_leader_info(q, cur_id, sizeof(cur_id), &cur_token, &cur_expiry) != FQ_OK)
         return FQ_ERR;
+    int other = cur_id[0] && strcmp(cur_id, node_id) != 0;
+
+    /* 폴링 부하 절감: 대기 노드는 짧은 주기로 여기를 반복한다. 매번 fq_fs_now_ms(파일 생성+stat+삭제)를
+     * 하면 공유 스토리지에 초당 수십 번 메타데이터 쓰기가 생긴다. 추정 FS 시각으로도 리스가 유효하면
+     * 파일을 만들지 않고 양보한다. 추정이 늦으면 인수가 그만큼(최대 재동기 주기) 늦어질 뿐이고,
+     * 추정이 앞서면 아래 실제 FS 시각 판정으로 넘어가므로 안전성은 그대로다. */
+    if (other && cur_expiry > fq_fs_clock_est_ms(q))
+        return FQ_ELOCKED;
+
+    uint64_t now = 0;
+    if (fq_fs_now_ms(ctrl, &now) != FQ_OK) return FQ_ERR;
 
     /* 유효한 다른 리더가 살아있으면 양보 */
-    if (cur_expiry > now && cur_id[0] && strcmp(cur_id, node_id) != 0)
+    if (other && cur_expiry > now)
         return FQ_ELOCKED;
 
     /* 인수 시도: election.lock 을 배타 생성으로 획득 (직렬화) */

@@ -17,6 +17,7 @@
 #define FQ_EEMPTY    -4   /* 큐가 비어 있음 */
 #define FQ_ELOCKED   -5   /* 락/리더십을 다른 쪽이 보유 */
 #define FQ_ENOLEADER -6   /* 리더십을 잃음 (fencing) */
+#define FQ_EINVAL    -7   /* 잘못된 인자 (node_id / stream_key 형식) */
 
 /* 튜닝 노브 */
 #define FQ_MAX_ATTEMPTS    5      /* 초과 시 DLQ(dead/)로 이동 */
@@ -43,12 +44,15 @@ typedef struct {
 
 /* ---- 생애주기 ---- */
 /* node_id: 이 노드의 식별자. 메시지 파일명과 리더십 id에 함께 쓰인다.
- *          NULL이면 환경변수 FQ_NODE_ID, 그것도 없으면 "node-<pid>"로 자동 설정. */
+ *          NULL이면 환경변수 FQ_NODE_ID, 그것도 없으면 "node-<pid>"로 자동 설정.
+ *          허용 문자: 영문자·숫자·'.'·'-'·'_' (1~63자, "__" 금지). 어기면 FQ_EINVAL.
+ *          공백은 leader.info 파싱을, "__"는 inflight 이름의 "__t<token>" 파싱을, '/'는 경로를 깨뜨린다. */
 int  fq_open(const char *root, const char *node_id, fq_queue **out);
 void fq_close(fq_queue *q);
 
 /* ---- Producer ---- */
-/* stream_key: NULL 허용. 같은 key는 같은 파티션으로 묶여 순서 보존에 사용 가능. */
+/* stream_key: NULL 허용. 같은 key는 같은 파티션으로 묶여 순서 보존에 사용 가능.
+ *             node_id와 같은 문자 규칙(1~127자). 어기면 FQ_EINVAL (fq_adopt도 동일). */
 int  fq_publish(fq_queue *q, const void *data, size_t len, const char *stream_key);
 
 /* ---- Consumer / 리더십 (Active-Passive) ---- */
@@ -105,7 +109,10 @@ int  fq_take(fq_queue *q, fq_msg *m, const char *path);
 int  fq_return(fq_queue *q, const char *path, uint32_t attempt);
 
 /* ---- 유지보수 ---- */
-/* tmp/의 고아 임시파일(발행 중 크래시 잔재) 중 mtime이 tmp_max_age_ms보다 오래된 것 정리.
+/* 크래시 잔재 중 mtime이 tmp_max_age_ms보다 오래된 것 정리: tmp/의 모든 파일(발행 중 크래시),
+ * control/의 .now-*(FS 시각 측정), leader-*.tmp(leader.info 교체 중), election.lock.stale-*.
+ * tmp_max_age_ms는 정상 발행·하트비트 한 번보다 충분히 길게(예: 수 분) 줄 것: 진행 중인 임시
+ * 파일을 지우면 그 발행이나 하트비트가 실패한다.
  * 반환: 삭제한 개수(>=0), 오류 시 음수. */
 int  fq_gc(fq_queue *q, uint64_t tmp_max_age_ms);
 
