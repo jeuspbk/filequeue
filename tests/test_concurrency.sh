@@ -1,15 +1,18 @@
 #!/usr/bin/env bash
 # test_concurrency.sh - 다중 프로세스 동시성 + failover 검증
 #
-# 인자: <fq_producer 경로> <fq_consumer 경로>
+# 인자: <fq_producer 경로> <fq_consumer 경로> [test_election 경로]
 # 검증 1) 다중 소비자가 동시에 떠도 Active-Passive로 단 하나만 활성, 메시지 유실 없음
 # 검증 2) 활성 소비자를 kill -9 한 뒤 다른 노드가 인수(failover)하여 잔여 메시지 회수, 유실 없음
+# 검증 3) 살아 있는 리더가 하트비트를 치는 동안 대기 노드가 리더십을 빼앗지 못함 (split-brain 없음)
 #
 # At-least-once 계약: 모든 메시지가 최소 1회 소비되어야 함(유실 0). 중복은 허용.
 
 set -u
 PRODUCER="${1:?producer 경로 필요}"
 CONSUMER="${2:?consumer 경로 필요}"
+# test_election 경로: 3번째 인자, 없으면 consumer 경로에서 이름만 바꿔 추정
+ELECTION="${3:-${CONSUMER/fq_consumer/test_election}}"
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
@@ -79,6 +82,23 @@ COVERED=$((U + DEAD))
 [ "$PROCESSED_X" -gt 0 ] && pass "nodeX가 활성화되어 일부 처리($PROCESSED_X)" || fail "nodeX가 아무것도 처리 못함"
 [ "$COVERED" -eq "$N" ] && pass "failover 후 유실 없음 (고유$U + dead$DEAD = $N)" || fail "유실 발생 (덮은 $COVERED != $N)"
 [ "$LEFT_FL" -eq 0 ] && pass "inflight 비워짐(회수 완료)" || fail "inflight 잔존($LEFT_FL)"
+
+if [ -x "$ELECTION" ]; then
+  echo "== [C] 리더 선출 경합 (살아 있는 리더를 대기 노드가 빼앗지 못함) =="
+  ROOT="$WORK/qC"
+  "$ELECTION" "$ROOT" A 3000 >"$WORK/cA.out" 2>&1 &
+  PA=$!
+  "$ELECTION" "$ROOT" B 3000 >"$WORK/cB.out" 2>&1 &
+  PB=$!
+  wait "$PA"; RA=$?
+  wait "$PB"; RB=$?
+  echo "  $(cat "$WORK/cA.out")"
+  echo "  $(cat "$WORK/cB.out")"
+  [ "$RA" -eq 0 ] && pass "리더 A가 리더십을 한 번도 잃지 않음" || fail "리더 A가 리더십을 잃음"
+  [ "$RB" -eq 0 ] && pass "대기 노드 B의 탈취 0회" || fail "대기 노드 B가 리더십을 탈취함"
+else
+  echo "== [C] 건너뜀: test_election 없음 ($ELECTION) =="
+fi
 
 echo ""
 echo "== 결과: $([ $fails -eq 0 ] && echo PASS || echo FAIL) ($fails 실패) =="

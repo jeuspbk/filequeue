@@ -60,7 +60,11 @@ target_link_libraries(fq_consumer filequeue)
 add_executable(fq_bench examples/fq_bench.c)
 target_link_libraries(fq_bench filequeue)
 
+# 리더 선출 경합 하네스 (2프로세스, test_concurrency.sh [C]에서 구동)
+add_executable(test_election tests/test_election.c)
+target_link_libraries(test_election filequeue)
+
 # 다중 프로세스 동시성 + failover 테스트는 tests/test_concurrency.sh 로 별도 실행한다
 # (ctest에 등록하지 않음: cygwin ctest와 git-bash 간 경로 표기(/cygdrive vs /d) 불일치로
 #  ctest 자동 실행이 불안정. 스크립트 자체는 정상 동작):
-#   bash tests/test_concurrency.sh ./build/fq_producer.exe ./build/fq_consumer.exe
+#   bash tests/test_concurrency.sh ./build/fq_producer.exe ./build/fq_consumer.exe [./build/test_election.exe]

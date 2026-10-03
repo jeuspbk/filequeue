@@ -4,7 +4,7 @@
  * 구현은 fq_fs_posix.c (POSIX/Cygwin) 와 fq_fs_win32.c (네이티브 Win32) 두 가지.
  *
  * 설계가 의존하는 핵심 원자성:
- *   1) fq_fs_rename_noreplace  : 같은 볼륨 내 원자적 rename (대상 존재 시 실패)
+ *   1) fq_fs_rename            : 같은 볼륨 내 원자적 rename (경합 시 단 하나만 성공)
  *   2) fq_fs_create_new        : 원자적 배타 생성 (리더 선출 mutex)
  *   3) fq_fs_trylock           : 권고 락 (선택적 최적화)
  */
@@ -22,7 +22,14 @@ int  fq_fs_mkdirs(const char *path);
 /* data/len을 path에 기록하고 fsync (내용 영속화). 기존 파일은 덮어씀. */
 int  fq_fs_write_sync(const char *path, const void *data, size_t len);
 
-/* 원자적 rename. 대상이 이미 있으면 FQ_EEXIST (덮어쓰지 않음). */
+/* 원자적 rename. 대상이 있으면 원자적으로 교체한다(POSIX rename / MOVEFILE_REPLACE_EXISTING).
+ * src가 없으면 FQ_ENOENT. 같은 src를 두 쪽이 동시에 rename하면 정확히 한 쪽만 성공한다.
+ * 메시지 상태 전이(대상 이름이 구조상 유일)와 leader.info 교체에 쓴다. */
+int  fq_fs_rename(const char *src, const char *dst);
+
+/* 원자적 rename. 대상이 이미 있으면 FQ_EEXIST (덮어쓰지 않음).
+ * 대상이 호출자 소유의 임의 경로일 때(fq_take)만 쓴다. POSIX 구현은 link+unlink라
+ * 두 단계이므로 큐 내부 상태 전이에는 fq_fs_rename을 쓸 것. */
 int  fq_fs_rename_noreplace(const char *src, const char *dst);
 
 /* 빈 파일을 원자적·배타적으로 생성. 이미 있으면 FQ_EEXIST. */

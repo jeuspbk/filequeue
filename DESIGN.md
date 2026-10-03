@@ -30,6 +30,10 @@
 ### 의존하는 파일시스템 원자성 (목표 스토리지에서 반드시 검증)
 
 1. **같은 볼륨 내 `rename`은 원자적** ← 가장 핵심. (NTFS / 대부분 POSIX FS 보장)
+   큐 내부 전이는 교체형 `rename`(POSIX `rename(2)`, Win32 `MOVEFILE_REPLACE_EXISTING`)만 쓴다.
+   대상 이름이 구조상 유일하므로 "덮어쓰지 않음"은 필요 없고, 같은 src를 두 쪽이 rename하면
+   정확히 한 쪽만 성공한다는 성질만 필요하다. POSIX에서 fail-if-exists를 흉내 내는 link+unlink는
+   두 단계라 이 성질을 깨므로 내부 전이에 쓰지 않는다
 2. **`O_EXCL` / `CREATE_NEW` 배타 생성은 원자적** ← 리더 선출 mutex
 3. (선택) OS 권고 락(`LockFileEx` / `fcntl`)의 노드 간 신뢰성 ← 있으면 최적화, 없어도 동작
 
@@ -129,8 +133,12 @@ inflight 파일명에는 소유권/펜싱 정보를 추가로 stamp 한다.
 - 리더는 주기적으로 `heartbeat`를 갱신하고 `lease_expiry`를 연장한다(하트비트).
 - 대기 노드는 `leader.info`를 폴링한다. **리스 만료가 관측되면** 인수 시도:
   1. `CREATE_NEW`로 `control/election.lock` 생성 시도 → 성공한 1개 노드만 선출 진행 (atomic create = mutex)
-  2. 승자는 `fencing_token`을 +1 증가시켜 `leader.info`를 tmp+rename으로 교체, 새 리스 설정
-  3. `election.lock` 삭제
+  2. 승자는 **락 안에서 `leader.info`를 다시 읽어** 리스가 여전히 만료 상태인지 재확인한다
+     (락 밖에서 읽은 값으로 진행하면 차례로 락을 잡은 두 노드가 같은 token을 쓴다)
+  3. `fencing_token`을 +1 증가시켜 `leader.info`를 tmp + **교체형 원자 rename**으로 바꾸고 새 리스 설정.
+     하트비트도 같은 경로를 쓴다. 삭제→생성 두 단계는 금지: 그 사이에 읽는 노드가 "리더 없음"을 보고
+     살아 있는 리더를 밀어낸다
+  4. `election.lock` 삭제
 - 선출 도중 크래시 대비: `election.lock`이 임계시간보다 오래되면 강제 정리(stale lock 회수)
 
 ### 4-2. Stale inflight 복구 (= 실제 failover 동작)

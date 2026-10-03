@@ -68,12 +68,9 @@ static int write_leader_info(fq_queue *q, const char *id,
 
     if (fq_fs_write_sync(tmp_path, line, (size_t)n) != FQ_OK) return FQ_ERR;
 
-    /* leader.info 는 덮어써야 하므로: 기존 삭제 후 rename (control 디렉터리 내 단일 라이터 가정).
-     * election.lock 으로 직렬화되므로 안전. */
-    char cur[1280];
-    fq_path(cur, sizeof(cur), q->root, FQ_DIR_CONTROL, "leader.info");
-    fq_fs_unlink(cur); /* 없으면 ENOENT, 무시 */
-    int rc = fq_fs_rename_noreplace(tmp_path, dst);
+    /* 원자적 교체. 삭제→생성 두 단계로 하면 그 사이에 읽는 노드가 "리더 없음(token 0)"을
+     * 보고 살아 있는 리더를 밀어낸다(하트비트는 election.lock 없이 여기를 지나므로 치명적). */
+    int rc = fq_fs_rename(tmp_path, dst);
     if (rc != FQ_OK) fq_fs_unlink(tmp_path);
     return rc;
 }
@@ -112,7 +109,19 @@ int fq_acquire_leadership(fq_queue *q, fq_lease *lease)
     }
     if (rc != FQ_OK) return FQ_ELOCKED;
 
-    /* 임계 구역: token 증가시켜 leader.info 갱신 */
+    /* 임계 구역. 락 밖에서 읽은 값은 낡았을 수 있다: 두 노드가 같은 만료 상태를 읽고 차례로
+     * 락을 잡으면, 재확인 없이는 둘 다 같은 token을 쓰고 두 번째가 첫 번째의 유효 리스를
+     * 덮어쓴다(split-brain + token 중복). 락 안에서 다시 읽어 재검증한다. */
+    if (fq_fs_now_ms(ctrl, &now) != FQ_OK ||
+        read_leader_info(q, cur_id, sizeof(cur_id), &cur_token, &cur_expiry) != FQ_OK) {
+        fq_fs_unlink(lock_path);
+        return FQ_ERR;
+    }
+    if (cur_expiry > now && cur_id[0] && strcmp(cur_id, node_id) != 0) {
+        fq_fs_unlink(lock_path);
+        return FQ_ELOCKED;                       /* 그 사이 다른 노드가 인수함 */
+    }
+
     uint64_t new_token = cur_token + 1;
     uint64_t expiry = now + fq_lease_ms();
     int wrc = write_leader_info(q, node_id, new_token, expiry);
@@ -182,13 +191,13 @@ static int recover_cb(const char *name, void *ud)
     if (attempt + 1 >= FQ_MAX_ATTEMPTS) {
         char dst[1408];
         fq_path(dst, sizeof(dst), c->q->root, FQ_DIR_DEAD, logical);
-        rc = fq_fs_rename_noreplace(src, dst);
+        rc = fq_fs_rename(src, dst);
         if (rc == FQ_OK) c->dead++;
     } else {
         char req[640], dst[1408];
         snprintf(req, sizeof(req), "%s.a%u", base, attempt + 1);
         fq_path(dst, sizeof(dst), c->q->root, FQ_DIR_INCOMING, req);
-        rc = fq_fs_rename_noreplace(src, dst);
+        rc = fq_fs_rename(src, dst);
         if (rc == FQ_OK) c->recovered++;
     }
     if (rc != FQ_OK && rc != FQ_ENOENT) c->err = rc;

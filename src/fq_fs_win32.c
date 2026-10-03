@@ -57,6 +57,14 @@ int fq_fs_write_sync(const char *path, const void *data, size_t len)
     return FQ_OK;
 }
 
+int fq_fs_rename(const char *src, const char *dst)
+{
+    if (MoveFileExA(src, dst, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) return FQ_OK;
+    DWORD e = GetLastError();
+    if (e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND) return FQ_ENOENT;
+    return FQ_ERR;
+}
+
 int fq_fs_rename_noreplace(const char *src, const char *dst)
 {
     /* REPLACE_EXISTING 미지정 → 대상 존재 시 실패 */

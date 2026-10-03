@@ -2,7 +2,7 @@
  *
  * 큐 설계는 아래 3가지 FS 원자성에 의존한다. 실제 공유 스토리지에서 이 하니스를
  * 돌려 전제가 성립하는지 먼저 확인해야 한다.
- *   1) atomic rename (대상 존재 시 실패)
+ *   1) atomic rename (교체형 fq_fs_rename / 대상 존재 시 실패하는 noreplace)
  *   2) atomic exclusive create (CREATE_NEW / O_EXCL)
  *   3) advisory lock (선택적)
  *
@@ -50,6 +50,16 @@ int main(int argc, char **argv)
     /* 대상 존재 시 rename 은 EEXIST (덮어쓰지 않음) */
     CHECK(fq_fs_write_sync(a, "x", 1) == FQ_OK, "src 재작성");
     CHECK(fq_fs_rename_noreplace(a, b) == FQ_EEXIST, "기존 대상으로 rename 거부(EEXIST)");
+    /* fq_fs_rename: 대상을 원자적으로 교체, src는 사라짐, 없는 src는 ENOENT */
+    CHECK(fq_fs_rename(a, b) == FQ_OK, "fq_fs_rename: 기존 대상 교체 성공");
+    CHECK(fq_fs_exists(a) == 0, "fq_fs_rename: src 사라짐");
+    {
+        void *buf = NULL; size_t len = 0;
+        CHECK(fq_fs_read_file(b, &buf, &len) == FQ_OK && len == 1 && ((char *)buf)[0] == 'x',
+              "fq_fs_rename: 교체된 내용");
+        free(buf);
+    }
+    CHECK(fq_fs_rename(a, b) == FQ_ENOENT, "fq_fs_rename: 없는 src는 ENOENT (경합 패배 표현)");
     fq_fs_unlink(a); fq_fs_unlink(b);
 
     /* 2) 원자적 배타 생성 */

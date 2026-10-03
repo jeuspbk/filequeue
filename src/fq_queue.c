@@ -121,8 +121,8 @@ int fq_publish(fq_queue *q, const void *data, size_t len, const char *stream_key
     char msg_path[1408];
     incoming_path(q, id, stream_key, msg_path, sizeof(msg_path));
 
-    /* 3) 원자적 rename (대상은 유일하므로 EEXIST 없음) */
-    int rc = fq_fs_rename_noreplace(tmp_path, msg_path);
+    /* 3) 원자적 rename (대상 이름은 구조상 유일) */
+    int rc = fq_fs_rename(tmp_path, msg_path);
     if (rc != FQ_OK) { fq_fs_unlink(tmp_path); return rc; }
 
     /* 4) 디렉터리 영속화 */
@@ -138,7 +138,7 @@ int fq_adopt(fq_queue *q, const char *path, const char *stream_key)
     fq_gen_id(id, sizeof(id));
     char msg_path[1408];
     incoming_path(q, id, stream_key, msg_path, sizeof(msg_path));
-    int rc = fq_fs_rename_noreplace(path, msg_path);   /* 원본이 없으면 FQ_ENOENT: 이미 옮겨짐 */
+    int rc = fq_fs_rename(path, msg_path);   /* 원본이 없으면 FQ_ENOENT: 이미 옮겨짐 */
     if (rc != FQ_OK) return rc;
     fsync_incoming(q);
     return FQ_OK;
@@ -182,7 +182,7 @@ int fq_return(fq_queue *q, const char *path, uint32_t attempt)
         snprintf(req_name, sizeof(req_name), "%s.a%u", name, attempt + 1);
         fq_path(dst, sizeof(dst), q->root, FQ_DIR_INCOMING, req_name);
     }
-    int rc = fq_fs_rename_noreplace(path, dst);         /* 원본이 없으면 FQ_ENOENT: 이미 되돌림 */
+    int rc = fq_fs_rename(path, dst);         /* 원본이 없으면 FQ_ENOENT: 이미 되돌림 */
     if (rc != FQ_OK) return rc;
     if (dead) {
         char dead_dir[1280];
@@ -269,7 +269,8 @@ int fq_claim(fq_queue *q, const fq_lease *lease, fq_msg **out)
             uint32_t attempt = 0;
             fq_parse_attempt(name, base, sizeof(base), &attempt);
 
-            /* CLAIM: incoming/<name> -> inflight/<name>__t<token> (원자적 rename) */
+            /* CLAIM: incoming/<name> -> inflight/<name>__t<token> (원자적 rename).
+             * 같은 src를 두 쪽이 rename하면 한 쪽만 성공 → 경합 패배는 ENOENT. */
             char inf_name[640];
             snprintf(inf_name, sizeof(inf_name), "%s__t%llu",
                      name, (unsigned long long)lease->token);
@@ -278,8 +279,8 @@ int fq_claim(fq_queue *q, const fq_lease *lease, fq_msg **out)
             fq_path(src, sizeof(src), q->root, FQ_DIR_INCOMING, name);
             fq_path(dst, sizeof(dst), q->root, FQ_DIR_INFLIGHT, inf_name);
 
-            int rc = fq_fs_rename_noreplace(src, dst);
-            if (rc == FQ_ENOENT || rc == FQ_EEXIST) continue; /* 경합 패배/이미 처리됨 */
+            int rc = fq_fs_rename(src, dst);
+            if (rc == FQ_ENOENT) continue;                    /* 경합 패배/이미 처리됨 */
             if (rc != FQ_OK) return FQ_ERR;
 
             void *data = NULL; size_t len = 0;
@@ -326,8 +327,8 @@ int fq_claim_if(fq_queue *q, const fq_lease *lease, fq_want_fn want, void *ud, f
         char inf_name[640], dst[1408];
         snprintf(inf_name, sizeof(inf_name), "%s__t%llu", name, (unsigned long long)lease->token);
         fq_path(dst, sizeof(dst), q->root, FQ_DIR_INFLIGHT, inf_name);
-        int rc = fq_fs_rename_noreplace(src, dst);
-        if (rc == FQ_ENOENT || rc == FQ_EEXIST) { free(data); continue; }
+        int rc = fq_fs_rename(src, dst);
+        if (rc == FQ_ENOENT) { free(data); continue; }
         if (rc != FQ_OK) { free(data); result = FQ_ERR; break; }
 
         fq_msg *m = (fq_msg *)calloc(1, sizeof(*m));
@@ -351,7 +352,7 @@ int fq_release(fq_queue *q, fq_msg *m)
     char src[1408], dst[1408];
     fq_path(src, sizeof(src), q->root, FQ_DIR_INFLIGHT, m->name);
     fq_path(dst, sizeof(dst), q->root, FQ_DIR_INCOMING, logical);
-    int rc = fq_fs_rename_noreplace(src, dst);
+    int rc = fq_fs_rename(src, dst);
     if (rc != FQ_OK) return rc;                         /* m은 claim 상태 그대로 */
     fsync_incoming(q);
     claim_cache_clear(q);                               /* 되돌린 메시지가 다시 맨 앞 후보 */
@@ -387,12 +388,12 @@ int fq_nack(fq_queue *q, fq_msg *m)
     if (attempt + 1 >= FQ_MAX_ATTEMPTS) {
         char dst[1408];
         fq_path(dst, sizeof(dst), q->root, FQ_DIR_DEAD, logical);
-        rc = fq_fs_rename_noreplace(src, dst);
+        rc = fq_fs_rename(src, dst);
     } else {
         char req_name[640], dst[1408];
         snprintf(req_name, sizeof(req_name), "%s.a%u", base, attempt + 1);
         fq_path(dst, sizeof(dst), q->root, FQ_DIR_INCOMING, req_name);
-        rc = fq_fs_rename_noreplace(src, dst);
+        rc = fq_fs_rename(src, dst);
     }
     fq_msg_free(m);
     return rc;

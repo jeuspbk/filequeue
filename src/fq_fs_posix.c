@@ -57,9 +57,18 @@ int fq_fs_write_sync(const char *path, const void *data, size_t len)
     return FQ_OK;
 }
 
+int fq_fs_rename(const char *src, const char *dst)
+{
+    /* rename(2)은 원자적이며 대상을 교체한다. src를 두 쪽이 동시에 rename하면 한 쪽은 ENOENT. */
+    if (rename(src, dst) != 0)
+        return (errno == ENOENT) ? FQ_ENOENT : FQ_ERR;
+    return FQ_OK;
+}
+
 int fq_fs_rename_noreplace(const char *src, const char *dst)
 {
-    /* POSIX rename(2)은 대상을 덮어쓴다. fail-if-exists 의미를 위해 link+unlink 사용. */
+    /* POSIX rename(2)은 대상을 덮어쓴다. fail-if-exists 의미를 위해 link+unlink 사용.
+     * 두 단계라 크래시/경합 시 src와 dst가 잠시 공존할 수 있다 → 큐 내부 전이에는 쓰지 않는다. */
     if (link(src, dst) != 0) {
         if (errno == EEXIST) return FQ_EEXIST;
         if (errno == ENOENT) return FQ_ENOENT;

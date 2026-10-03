@@ -23,6 +23,7 @@ ctest --test-dir build --output-on-failure # C 단위 테스트 (atomicity, basi
 
 # 다중 프로세스 동시성 + failover 테스트 (bash로 별도 실행 — 아래 주의 참고)
 bash tests/test_concurrency.sh ./build/fq_producer.exe ./build/fq_consumer.exe
+# [C] 구간은 ./build/test_election.exe 를 자동으로 찾아 리더 선출 경합(split-brain)을 검사한다
 ```
 
 **테스트가 2계층인 이유:** `ctest`에는 C 단위 테스트만 등록돼 있다. 동시성/failover 테스트는
@@ -63,6 +64,9 @@ fq_fs_posix.c / fq_fs_win32.c   (플랫폼 원자 연산 추상화)
 ### 메시지 흐름
 - **발행**: `tmp/`에 기록+fsync → `incoming/`으로 원자적 rename → 디렉터리 fsync. (torn 파일 방지)
 - **소비**: `incoming/`→`inflight/` rename으로 CLAIM(경합 시 단 하나만 성공) → 처리 → unlink로 ACK.
+  큐 내부 전이는 모두 `fq_fs_rename`(교체형, POSIX `rename`)이다. 대상 이름이 구조상 유일하기 때문.
+  `fq_fs_rename_noreplace`는 POSIX에서 link+unlink 두 단계라 경합 시 둘 다 성공할 수 있으므로
+  `fq_take`(호출자 경로로 내보내기)에만 쓴다.
 - **실패**: CLAIM~ACK 사이 크래시 시 파일이 `inflight/`에 남고, 새 리더가 `fq_recover_stale`로
   `incoming/`에 되돌림 → 재처리(중복 가능, 유실 없음). **소비자는 반드시 멱등**이어야 한다.
 
@@ -75,7 +79,10 @@ fq_fs_posix.c / fq_fs_win32.c   (플랫폼 원자 연산 추상화)
 
 ### Failover (Active-Passive) — `fq_leader.c`
 - **리스 기반 선출**: `control/leader.info`(`<id> <token> <expiry>`)를 폴링, 만료 관측 시
-  `control/election.lock`을 원자적 배타 생성(`fq_fs_create_new`)으로 직렬화한 뒤 token을 +1 하여 인수.
+  `control/election.lock`을 원자적 배타 생성(`fq_fs_create_new`)으로 직렬화한 뒤, **락 안에서
+  leader.info를 다시 읽어 재검증**하고 token을 +1 하여 인수. leader.info 교체는 항상 tmp에 쓰고
+  `fq_fs_rename`으로 원자 교체한다. 삭제 후 생성으로 바꾸면 그 사이에 읽는 노드가 "리더 없음"을 보고
+  살아 있는 리더를 밀어낸다 (`tests/test_election.c`가 이 경합을 검사).
 - **fencing token**: 단조 증가. 모든 inflight에 stamp되며, 복구는 현재 token보다 낮은 것만 회수 →
   멈췄다 깨어난 옛 리더(좀비)가 큐를 건드려도 무해.
 - **시각**: 노드 간 clock skew를 피하려 `fq_fs_now_ms`(공유 FS에 임시 파일을 만들어 mtime을 읽음)를
