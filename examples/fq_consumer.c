@@ -2,6 +2,7 @@
  *
  * 사용: fq_consumer <queue_root> <node_id> <logfile> <run_ms>
  *   - 리더십을 획득하면(활성) recover_stale 후 claim/ack 루프로 큐를 소비.
+ *     하트비트(리스 갱신)마다 recover_stale을 다시 돈다.
  *   - 소비한 각 메시지의 페이로드를 logfile에 한 줄씩 append (at-least-once 검증용).
  *   - run_ms 동안 동작 후 종료. 리더가 아니면(대기) 짧게 쉬며 재시도.
  *
@@ -67,6 +68,7 @@ int main(int argc, char **argv)
         if (now >= next_renew) {
             if (fq_renew_lease(q, &lease) != FQ_OK) { have_lead = 0; continue; } /* 리더십 상실 */
             next_renew = now + renew_iv;
+            fq_recover_stale(q, &lease);   /* 좀비가 나중에 claim한 옛 token inflight도 회수 */
         }
 
         /* claim → 처리 → ack */

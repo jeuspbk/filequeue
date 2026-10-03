@@ -57,8 +57,9 @@ int main(void) {
 
         fq_ack(q, m);                   /* 처리 완료 → inflight 삭제 (m도 해제됨) */
 
-        /* 긴 루프라면 주기적으로 리스를 갱신해 리더십을 유지한다 */
-        /* fq_renew_lease(q, &lease); */
+        /* 긴 루프라면 주기적으로 리스를 갱신해 리더십을 유지하고, 갱신마다 stale도 회수한다 */
+        /* if (fq_renew_lease(q, &lease) != FQ_OK) break;   리더십 상실 → 중단
+           fq_recover_stale(q, &lease);                                          */
     }
     /* fq_claim 이 FQ_EEMPTY 를 반환하면 큐가 비었다는 뜻 */
 
@@ -73,6 +74,7 @@ int main(void) {
   단 하나만 성공한다.
 - `fq_ack` : 처리가 끝나면 `inflight/` 파일을 삭제. 이때 `fq_msg`도 함께 해제된다.
 - 처리 중 크래시가 나면 메시지는 `inflight/`에 남고, 다음 리더가 `fq_recover_stale`로 되살린다.
+- `fq_open`의 `node_id`는 영문자·숫자·`.`·`-`·`_`만 허용된다(`__` 금지). 어기면 `FQ_EINVAL`.
 
 ## 더 간단하게: `fq_consume`
 
@@ -93,6 +95,9 @@ for (;;) {
 }
 ```
 
+메시지 하나를 처리하는 데 리스(기본 15초)보다 오래 걸릴 수 있다면 처리 도중 `fq_heartbeat(q)`를
+호출해 리스를 연장한다([운영 > 긴 메시지 처리](#긴-메시지-처리)).
+
 ## 빌드해서 실행하기
 
 완전한 동작 예제는 저장소의 `examples/`에 있다. 이들은 동시성 테스트의 드라이버이기도 하다.
@@ -105,5 +110,5 @@ for (;;) {
 ./build/fq_consumer /shared/myqueue nodeA out.log 5000
 ```
 
-`fq_consumer.c`는 리더십 획득 → `recover_stale` → 하트비트 갱신 → claim/ack 루프를 모두 포함한
+`fq_consumer.c`는 리더십 획득 → `recover_stale` → 하트비트 갱신(+`recover_stale`) → claim/ack 루프를 모두 포함한
 실전형 소비 루프를 보여준다. 실제 데몬을 만들 때 출발점으로 삼으면 된다.

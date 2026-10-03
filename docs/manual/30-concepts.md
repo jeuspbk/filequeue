@@ -26,10 +26,13 @@ filequeue 전체를 관통하는 단 하나의 원칙이다.
   inflight/       소비자가 점유하여 처리 중
   dead/           DLQ: 재시도 한도를 초과한 메시지
   control/
-    leader.info   현재 리더 id, fencing token, 리스 만료시각
+    leader.info   현재 리더 id, fencing token, 리스 만료시각 (하트비트 = 이 파일의 원자 교체)
     election.lock 리더 선출 직렬화용 배타 생성 mutex
-    heartbeat     리더 하트비트 (FS 시각 출처)
 ```
+
+별도의 heartbeat 파일은 없다. 리더는 `leader.info`를 tmp에 쓰고 원자적 rename으로 교체하여 리스를
+연장한다. `control/`에는 이 밖에 FS 시각 측정용 `.now-*`, 교체 중인 `leader-*.tmp`,
+회수된 `election.lock.stale-*` 같은 잠깐 존재하는 파일이 생기며, 크래시로 남은 것은 `fq_gc`가 정리한다.
 
 ## 메시지 파일명 규칙
 
@@ -47,6 +50,19 @@ filequeue 전체를 관통하는 단 하나의 원칙이다.
 | `producer`-`id` | 노드 간 조율 없이 전역 유일성 보장. |
 | `__t<token>` | inflight 점유 시 stamp되는 **fencing token**(리더 토큰). 복구의 판단 기준. |
 | `.a<N>` | 재시도 횟수. `FQ_MAX_ATTEMPTS` 초과 시 `dead/`로 이동. |
+
+### 식별자 규칙
+
+파일명과 `leader.info`(공백 구분 한 줄)에 그대로 들어가므로 `node_id`와 `stream_key`는 다음 규칙을
+지켜야 한다. 어기면 `fq_open` / `fq_publish` / `fq_adopt`가 `FQ_EINVAL`을 돌려준다.
+
+| 항목 | 규칙 |
+|---|---|
+| 허용 문자 | 영문자·숫자·`.`·`-`·`_` |
+| 금지 | 연속 밑줄 `__` (inflight 이름의 `__t<token>` 구분자와 충돌) |
+| 길이 | `node_id` 1~63자, `stream_key` 1~127자 |
+
+공백은 `leader.info` 파싱을, `__`는 `__t<token>` 파싱을, `/`는 경로를 깨뜨리기 때문이다.
 
 이 파일명 파싱은 `src/fq_util.c`의 `fq_parse_attempt` / `fq_parse_inflight`에 집중돼 있다.
 포맷을 바꾸려면 이 두 함수와 `fq_queue.c`/`fq_leader.c`의 이름 생성부를 함께 고쳐야 한다.
@@ -66,5 +82,8 @@ filequeue 전체를 관통하는 단 하나의 원칙이다.
 - **소비**: `incoming/` → `inflight/` rename으로 점유(CLAIM) → 처리 → unlink로 ACK.
 - **실패/복구**: CLAIM~ACK 사이 크래시 시 파일이 `inflight/`에 남고, 다음 리더가
   `fq_recover_stale`로 `incoming/`에 되돌린다(재처리). 이것이 at-least-once의 근거다.
+  리더는 인수 직후뿐 아니라 **하트비트마다** 이 회수를 반복한다.
+- **발행 시각**: 파일명의 `epoch_ms`는 로컬 벽시계가 아니라 공유 FS 시각 기준(오프셋을 30초마다
+  재측정, 단조 보정)이라 노드 간 시계 차이가 있어도 발행 순서가 크게 뒤집히지 않는다.
 
 크래시 지점별 정확한 결과는 [Failover 운영 > 크래시 지점별 결과](#크래시-지점별-결과)의 표를 참고.

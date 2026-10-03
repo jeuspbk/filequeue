@@ -23,13 +23,16 @@ cmake --build build                        # 빌드
 산출물:
 
 - `build/libfilequeue.a` — 정적 라이브러리
-- `build/test_atomicity`, `build/test_basic` — 단위 테스트
+- `build/test_atomicity`, `build/test_basic`, `build/test_consume`, `build/test_twophase`,
+  `build/test_clock` — 단위 테스트 (`ctest` 등록)
+- `build/test_election` — 리더 선출 경합(split-brain) 검사. 동시성 스크립트가 자동으로 사용
 - `build/fq_producer`, `build/fq_consumer` — CLI 예제 겸 테스트 드라이버
+- `build/fq_bench` — 처리량 벤치마크 (`BENCHMARK.md` 참고)
 
 ## 테스트 실행
 
 ```bash
-# C 단위 테스트 (원자성 검증 + 기본 라운드트립/failover)
+# C 단위 테스트 (원자성, 기본 라운드트립/failover, consume·하트비트, 2단계 발행, FS 시각)
 ctest --test-dir build --output-on-failure
 
 # 단일 테스트 직접 실행
@@ -38,6 +41,7 @@ ctest --test-dir build --output-on-failure
 
 # 다중 프로세스 동시성 + failover 테스트 (bash 필요)
 bash tests/test_concurrency.sh ./build/fq_producer ./build/fq_consumer
+# [C] 구간은 ./build/test_election 을 자동으로 찾아 리더 선출 경합(split-brain)을 검사한다
 ```
 
 > 동시성 테스트는 `ctest`에 등록돼 있지 않다. 혼합 셸 환경(cygwin `ctest` ↔ git-bash)에서
