@@ -19,7 +19,9 @@ typedef struct fq_lock fq_lock;   /* 불투명 핸들, 힙 할당 */
 /* 디렉터리 생성 (mkdir -p). 이미 있으면 OK. */
 int  fq_fs_mkdirs(const char *path);
 
-/* data/len을 path에 기록하고 fsync (내용 영속화). 기존 파일은 덮어씀. */
+/* data/len을 path에 기록하고 fsync (내용 영속화). 기존 파일은 덮어씀.
+ * 실패하면 path를 지우고(반쯤 쓰인 파일이 공간을 차지하지 않게) 공간 부족은 FQ_ENOSPC, 그 밖은 FQ_ERR.
+ * 그러므로 path는 항상 호출자 소유의 새 임시 파일이어야 한다. */
 int  fq_fs_write_sync(const char *path, const void *data, size_t len);
 
 /* 원자적 rename. 대상이 있으면 원자적으로 교체한다(POSIX rename / MOVEFILE_REPLACE_EXISTING).

@@ -40,24 +40,38 @@ int fq_fs_mkdirs(const char *path)
     return FQ_OK;
 }
 
+static int write_err_rc(DWORD e)
+{
+    return (e == ERROR_DISK_FULL || e == ERROR_HANDLE_DISK_FULL) ? FQ_ENOSPC : FQ_ERR;
+}
+
+/* 쓰기 실패 시 반쯤 쓰인 파일을 지운다(fq_fs.h). 오류 코드는 지우기 전에 보존한다. */
+static int write_fail(const char *path, HANDLE h)
+{
+    int rc = write_err_rc(GetLastError());
+    CloseHandle(h);
+    DeleteFileA(path);
+    return rc;
+}
+
 int fq_fs_write_sync(const char *path, const void *data, size_t len)
 {
     HANDLE h = CreateFileA(path, GENERIC_WRITE, 0, NULL,
                            CREATE_ALWAYS, FILE_FLAG_WRITE_THROUGH, NULL);
-    if (h == INVALID_HANDLE_VALUE) return FQ_ERR;
+    if (h == INVALID_HANDLE_VALUE) return write_err_rc(GetLastError());
 
     const char *p = (const char *)data;
     size_t left = len;
     while (left > 0) {
         DWORD chunk = (left > 0x40000000u) ? 0x40000000u : (DWORD)left;
         DWORD wrote = 0;
-        if (!WriteFile(h, p, chunk, &wrote, NULL)) { CloseHandle(h); return FQ_ERR; }
+        if (!WriteFile(h, p, chunk, &wrote, NULL)) return write_fail(path, h);
         p += wrote;
         left -= wrote;
     }
-    BOOL flushed = FlushFileBuffers(h);
+    if (!FlushFileBuffers(h)) return write_fail(path, h);
     CloseHandle(h);
-    return flushed ? FQ_OK : FQ_ERR;
+    return FQ_OK;
 }
 
 /* 다른 핸들이 열고 있는 대상을 교체하거나(leader.info를 대기 노드가 읽는 중), 경합 상대가 옮기는

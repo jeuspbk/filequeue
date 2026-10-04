@@ -113,6 +113,8 @@ fq_fs_posix.c / fq_fs_win32.c   (플랫폼 원자 연산 추상화)
 - 잦은 경로(대기 노드 폴링, 메시지 이름)에는 `fq_fs_clock_est_ms`(추정 FS 시각, 30초마다 재측정)를,
   정확해야 하는 판정(리스 인수, 갱신)에는 `fq_fs_now_ms`를 쓴다.
 - 리스 길이는 `fq_lease_ms()` 하나로 읽는다(`FQ_LEASE_MS_OVERRIDE` 반영). 복제하지 말 것.
+- 일시적 오류에 리더십을 버리지 말 것: `fq_consume`은 하트비트 실패(`FQ_ERR`·락 보유)에도 리스 자체 만료
+  전까지 claim을 계속한다. `fq_fs_write_sync`는 실패 시 대상 파일을 지우므로 임시 파일 경로에만 쓸 것.
 - 반환 규약: `FQ_OK`(0) 성공, 음수 오류 코드(`fq.h`). claim 경합 패배는 `FQ_ENOENT`로
   표현되며 정상 흐름이다 — 다음 후보로 넘어가야 한다.
 - 공유 디렉터리(`tmp/`, `control/`)에 만드는 임시 파일 이름에는 반드시 `node_id`를 넣을 것(`fq_fs_now_ms`도

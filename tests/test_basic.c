@@ -226,6 +226,40 @@ int main(int argc, char **argv)
         fq_close(d2);
     }
 
+    /* [11] 하트비트가 일시적 I/O 오류로 실패해도(리스는 유효) 리더는 claim을 계속한다 */
+    printf("[11] 하트비트 일시 오류 내성\n");
+    {
+        char er[1100], li[1408], ctl[1408], bak[1420];
+        snprintf(er, sizeof(er), "%s-err", root);
+        fq_queue *eq = NULL;
+        CHECK(fq_open(er, "errA", &eq) == FQ_OK, "open");
+        if (eq) {
+            fq_path(li, sizeof(li), er, FQ_LEADER_INFO, NULL);
+            fq_fs_write_sync(li, "none 0 0\n", 9);
+            fq_msg *m = NULL;
+            while (fq_consume(eq, &m) == FQ_OK) fq_ack(eq, m);   /* 재실행 대비 비움 + 리더 됨 */
+            CHECK(eq->lead_held == 1, "리더 됨");
+
+            CHECK(fq_publish(eq, "e1", 2, NULL) == FQ_OK, "발행");
+            /* control/을 파일로 바꿔치기 → leader.info 읽기·쓰기, FS 시각 측정이 모두 실패 */
+            fq_path(ctl, sizeof(ctl), er, FQ_DIR_CONTROL, NULL);
+            snprintf(bak, sizeof(bak), "%s.bak", ctl);
+            CHECK(fq_fs_rename(ctl, bak) == FQ_OK && fq_fs_write_sync(ctl, "x", 1) == FQ_OK,
+                  "control/ 고장 흉내");
+            eq->lead_next_renew_ms = 0;                         /* 하트비트 시점 도래 */
+            m = NULL;
+            CHECK(fq_consume(eq, &m) == FQ_OK && m, "갱신 실패에도 claim 계속 (FQ_ERR 아님)");
+            CHECK(eq->lead_held == 1, "리더십 유지 (자체 만료 전)");
+            if (m) fq_ack(eq, m);
+
+            fq_fs_unlink(ctl);
+            fq_fs_rename(bak, ctl);
+            eq->lead_next_renew_ms = 0;
+            CHECK(fq_consume(eq, &m) == FQ_EEMPTY, "복구 후 갱신 성공, 빈 큐");
+            fq_close(eq);
+        }
+    }
+
     /* [10] fq_open 인자 검증: root NULL·과도한 길이는 EINVAL (경로가 조용히 잘리지 않게) */
     printf("[10] fq_open 인자 검증\n");
     {

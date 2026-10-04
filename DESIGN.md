@@ -220,6 +220,10 @@ inflight/<이름>.msg[.a<attempt>]__t<token>    # claim 시 리더 token을 stam
 ## 5. 부가 메커니즘
 
 - **Poison 메시지 / DLQ:** `attempt`가 N 초과 시 `dead/`로 이동(무한 재처리 루프 차단).
+- **오류 내성:** 리더의 하트비트가 일시 오류(fsync 실패, NFS 정지, 디스크 풀)로 실패해도 FS상 리스가
+  유효한 동안은 claim을 계속하고 갱신을 잠시 뒤 다시 시도한다(락 보유와 같은 처리). 끝내 갱신하지
+  못하면 리스 자체 만료 감지가 내려놓는다. `fq_fs_write_sync`는 실패 시 반쯤 쓰인 파일을 지우고 공간
+  부족을 `FQ_ENOSPC`로 구분한다. GC는 FS 시각 측정(파일 생성)이 실패하면 추정 FS 시각으로 대신한다.
 - **GC:** 임계시간을 넘긴 크래시 잔재 정리. `tmp/`는 전부(발행 중 크래시), `control/`은 이름으로 골라
   `.now-*`(FS 시각 측정), `leader-*.tmp`(leader.info 교체 중), `election.lock.stale-*`만. 살아 있는
   `leader.info`·`election.lock`은 건드리지 않는다. 임계시간은 발행·하트비트 한 번보다 충분히 길게.

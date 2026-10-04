@@ -20,6 +20,7 @@ static uint64_t renew_interval_ms(void)
  * 복구를 인수 때 한 번만 하면, 그 뒤에 옛 token으로 claim한 좀비의 inflight는 다음 failover까지
  * 방치된다. 하트비트마다 inflight를 한 번 훑어(대개 수 개) 회수한다. */
 #define HEARTBEAT_LOCK_RETRIES 5   /* election.lock이 잠깐 잡혀 있을 때 재시도 횟수 (10ms 간격) */
+#define HEARTBEAT_RETRY_MS     100 /* 갱신 실패(락 보유·일시 오류) 뒤 다음 시도까지 */
 
 /* 반환: FQ_OK 갱신됨, FQ_ELOCKED 리더십 상실, FQ_EEXIST election.lock이 계속 잡혀 있어 이번엔 못 함
  * (리더십은 아직 유지, 리스 자체 만료 감지가 안전망), FQ_ERR 오류. */
@@ -65,7 +66,14 @@ static int lead(fq_queue *q)
         fq_recover_stale(q, &q->lead_lease);        /* 인수 직후 1회 회수 */
     } else if (now >= q->lead_next_renew_ms) {
         int rc = heartbeat_now(q, now);
-        if (rc == FQ_EEXIST) return FQ_OK;   /* 다음 호출에 다시 갱신 (next_renew 그대로) */
+        if (rc == FQ_EEXIST || rc == FQ_ERR) {
+            /* 락이 잡혀 있거나 일시적 I/O 오류(fsync 실패, NFS 정지, 디스크 풀): FS상 리스는 아직
+             * 유효하므로 리더를 유지하고 계속 claim한다. 갱신은 잠시 뒤 다시 시도하고, 끝내 못 하면
+             * 위의 리스 자체 만료 감지가 내려놓는다. 여기서 FQ_ERR를 돌려주면 claim이 막히고, 오류에
+             * 루프를 끝내는 호출자는 오류 한 번에 데몬이 죽는다. */
+            q->lead_next_renew_ms = now + HEARTBEAT_RETRY_MS;
+            return FQ_OK;
+        }
         return rc;
     }
     return FQ_OK;

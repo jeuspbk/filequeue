@@ -38,10 +38,28 @@ int fq_fs_mkdirs(const char *path)
     return FQ_OK;
 }
 
+static int write_errno_rc(int e)
+{
+#ifdef EDQUOT
+    if (e == EDQUOT) return FQ_ENOSPC;
+#endif
+    return e == ENOSPC ? FQ_ENOSPC : FQ_ERR;
+}
+
+/* 쓰기 실패 시 반쯤 쓰인 파일을 지운다(fq_fs.h). 디스크가 찰수록 실패한 임시 파일이 남은 공간을
+ * 갉아먹지 않도록. errno는 unlink 전에 보존한다. */
+static int write_fail(const char *path, int fd)
+{
+    int rc = write_errno_rc(errno);
+    if (fd >= 0) close(fd);
+    unlink(path);
+    return rc;
+}
+
 int fq_fs_write_sync(const char *path, const void *data, size_t len)
 {
     int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    if (fd < 0) return FQ_ERR;
+    if (fd < 0) return write_errno_rc(errno);
 
     const char *p = (const char *)data;
     size_t left = len;
@@ -49,14 +67,13 @@ int fq_fs_write_sync(const char *path, const void *data, size_t len)
         ssize_t w = write(fd, p, left);
         if (w < 0) {
             if (errno == EINTR) continue;
-            close(fd);
-            return FQ_ERR;
+            return write_fail(path, fd);
         }
         p += w;
         left -= (size_t)w;
     }
-    if (fsync(fd) != 0) { close(fd); return FQ_ERR; }
-    if (close(fd) != 0) return FQ_ERR;
+    if (fsync(fd) != 0) return write_fail(path, fd);
+    if (close(fd) != 0) return write_fail(path, -1);
     return FQ_OK;
 }
 

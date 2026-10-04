@@ -92,10 +92,14 @@ fq_msg *m = NULL;
 for (;;) {
     int rc = fq_consume(q, &m);             /* 획득·복구·하트비트·claim 자동 */
     if (rc == FQ_OK)        { /* 처리(멱등) */ fq_ack(q, m); }
-    else if (rc == FQ_ERR)  break;
+    else if (rc == FQ_ERR)  sleep_ms(1000); /* 일시적일 수 있음(I/O 오류): 로그 남기고 잠시 뒤 재시도 */
     else                    sleep_ms(20);   /* FQ_EEMPTY(내가 리더,빔) 또는 FQ_ELOCKED(대기) */
 }
 ```
+
+`FQ_ERR`에 루프를 끝내지 말 것. fsync 실패, NFS 일시 정지, 디스크 풀 같은 일시적 오류에도 나올 수
+있다. 리더가 하트비트만 실패한 경우에는 `fq_consume`이 리스가 유효한 동안 claim을 계속하고 갱신을
+잠시 뒤 다시 시도하므로, 이 경우엔 `FQ_ERR`가 나오지도 않는다.
 
 메시지 하나를 처리하는 데 리스(기본 15초)보다 오래 걸릴 수 있다면 처리 도중 `fq_heartbeat(q)`를
 호출해 리스를 연장한다([운영 > 긴 메시지 처리](#긴-메시지-처리)).

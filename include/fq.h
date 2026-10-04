@@ -2,6 +2,12 @@
  *
  * 공유 디스크 기반 Active-Passive 파일 큐. At-least-once 전달.
  * 설계 근거는 DESIGN.md 참고.
+ *
+ * 스레드: fq_queue 핸들은 스레드 안전하지 않다(발행 seq, claim 캐시, 리더십 상태). 스레드마다 핸들을
+ * 따로 열 것. 핸들이 다르면 같은 프로세스·같은 node_id여도 안전하다(id 생성은 프로세스 전역 원자적).
+ *
+ * FQ_ERR는 일시적일 수 있다(fsync 실패, NFS 정지 등). 소비/대기 루프는 FQ_ERR에 끝내지 말고 잠시
+ * 쉬었다가 다시 호출할 것.
  */
 #ifndef FQ_H
 #define FQ_H
@@ -18,6 +24,7 @@
 #define FQ_ELOCKED   -5   /* 락/리더십을 다른 쪽이 보유 */
 #define FQ_ENOLEADER -6   /* 리더십을 잃음 (fencing) */
 #define FQ_EINVAL    -7   /* 잘못된 인자 (node_id / stream_key 형식) */
+#define FQ_ENOSPC    -8   /* 공간 부족 (fq_publish): 재시도보다 운영자 조치가 필요할 수 있다 */
 
 /* 튜닝 노브 */
 #define FQ_MAX_ATTEMPTS    5      /* 초과 시 DLQ(dead/)로 이동 */
@@ -96,7 +103,8 @@ int  fq_release(fq_queue *q, fq_msg *m);
  *   FQ_OK      : *out 에 메시지. 처리 후 반드시 fq_ack / fq_nack 호출.
  *   FQ_EEMPTY  : 내가 활성 리더이나 큐가 비어 있음.
  *   FQ_ELOCKED : 다른 노드가 활성 리더(이 노드는 대기 상태). 잠시 후 재호출하면 됨.
- *   FQ_ERR     : 오류.
+ *   FQ_ERR     : 오류(일시적일 수 있음 → 잠시 후 재호출). 리더가 하트비트만 실패한 경우에는
+ *                FQ_ERR 대신 claim을 계속하고(리스가 유효한 동안) 갱신은 잠시 뒤 다시 시도한다.
  * 노드 식별자는 fq_open에서 설정한 q->node_id를 사용한다. */
 int  fq_consume(fq_queue *q, fq_msg **out);
 /* fq_consume과 같되 fq_claim_if로 고른다. */

@@ -16,6 +16,10 @@ API의 **정본은 `include/fq.h`의 선언과 주석**이다. 이 절은 표 �
 | `FQ_ELOCKED` | -5 | 락/리더십을 다른 쪽이 보유 |
 | `FQ_ENOLEADER` | -6 | 리더십을 잃음 (fencing) |
 | `FQ_EINVAL` | -7 | 잘못된 인자 (`node_id` / `stream_key` 형식, [식별자 규칙](#식별자-규칙) 참고) |
+| `FQ_ENOSPC` | -8 | 공간 부족 (`fq_publish`). 재시도보다 운영자 조치(정리·증설)가 필요할 수 있다 |
+
+> `FQ_ERR`는 일시적일 수 있다(fsync 실패, NFS 정지 등). 소비/대기 루프는 `FQ_ERR`에 종료하지 말고
+> 잠시 쉬었다가 다시 호출한다. 쓰기에 실패한 임시 파일은 라이브러리가 그 자리에서 지운다.
 
 > `fq_claim` 도중 다른 소비자에게 메시지를 빼앗기면 내부적으로 `FQ_ENOENT`/`FQ_EEXIST`로
 > 표현되지만, 이는 정상 흐름이라 라이브러리가 다음 후보로 넘어간다. 호출자에게는 결국 `FQ_OK`(획득)
@@ -116,7 +120,7 @@ typedef int (*fq_want_fn)(const void *data, size_t len, void *ud);
 | `FQ_OK` | `*out`에 메시지 | 처리 후 `fq_ack` / `fq_nack` |
 | `FQ_EEMPTY` | 내가 활성 리더이나 큐가 빔 | 잠시 후 재호출 |
 | `FQ_ELOCKED` | 다른 노드가 활성 리더(대기 상태) | 잠시 후 재호출 |
-| `FQ_ERR` | 오류 | — |
+| `FQ_ERR` | 오류(일시적일 수 있음). 리더의 하트비트 실패는 여기 해당하지 않음(claim 계속) | 잠시 후 재호출 |
 
 `fq_consume`은 **리스 자체 만료를 스스로 감지**한다. 마지막 성공 갱신 뒤 리스 길이(`FQ_LEASE_MS`)가
 지났다면(GC 멈춤, 절전, 긴 처리) 옛 token으로 claim을 계속하지 않고 리더십을 내려놓은 뒤

@@ -140,7 +140,8 @@ int fq_publish(fq_queue *q, const void *data, size_t len, const char *stream_key
     char tmp_name[192], tmp_path[1408];
     snprintf(tmp_name, sizeof(tmp_name), "%s-%s.tmp", q->node_id, id);
     fq_path(tmp_path, sizeof(tmp_path), q->root, FQ_DIR_TMP, tmp_name);
-    if (fq_fs_write_sync(tmp_path, data, len) != FQ_OK) return FQ_ERR;
+    int wrc = fq_fs_write_sync(tmp_path, data, len);   /* 실패 시 tmp는 이미 지워짐 */
+    if (wrc != FQ_OK) return wrc;                       /* FQ_ENOSPC 또는 FQ_ERR */
 
     /* 2) 최종 메시지명 */
     char msg_path[1408];
@@ -471,8 +472,10 @@ int fq_gc(fq_queue *q, uint64_t tmp_max_age_ms)
     char tmp_dir[1280];
     fq_path(tmp_dir, sizeof(tmp_dir), q->root, FQ_DIR_TMP, NULL);
 
+    /* FS 시각은 파일을 하나 만들어 잰다. 디스크가 가득 차 그 생성이 실패하면(정리가 가장 필요할 때)
+     * 추정 FS 시각(마지막으로 잰 오프셋)으로 대신한다. 나이 판정이 조금 부정확할 뿐 안전하다. */
     uint64_t now = 0;
-    if (fq_fs_now_ms(tmp_dir, q->node_id, &now) != FQ_OK) return FQ_ERR;
+    if (fq_fs_now_ms(tmp_dir, q->node_id, &now) != FQ_OK) now = fq_fs_clock_est_ms(q);
 
     gc_ctx c = { q, FQ_DIR_TMP, now > tmp_max_age_ms ? now - tmp_max_age_ms : 0, 0 };
     if (fq_fs_list(tmp_dir, gc_cb, &c) != FQ_OK) return FQ_ERR;
