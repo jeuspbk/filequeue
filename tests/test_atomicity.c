@@ -84,8 +84,8 @@ int main(int argc, char **argv)
     printf("[4] FS 시각 (clock skew 회피용)\n");
     {
         uint64_t t1 = 0, t2 = 0;
-        CHECK(fq_fs_now_ms(dir, &t1) == FQ_OK && t1 > 0, "fs_now 읽기");
-        CHECK(fq_fs_now_ms(dir, &t2) == FQ_OK && t2 >= t1, "fs_now 단조 증가");
+        CHECK(fq_fs_now_ms(dir, "test", &t1) == FQ_OK && t1 > 0, "fs_now 읽기");
+        CHECK(fq_fs_now_ms(dir, "test", &t2) == FQ_OK && t2 >= t1, "fs_now 단조 증가");
     }
 
     /* 5) 디렉터리 나열 */

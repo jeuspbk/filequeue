@@ -24,7 +24,10 @@ int fq_fs_mkdirs(const char *path)
     if (n >= sizeof(buf)) return FQ_ERR;
     memcpy(buf, path, n + 1);
 
-    for (char *p = buf + 1; *p; p++) {
+    /* "C:/..."(Cygwin이 받는 Windows 경로)에서 mkdir("C:")을 부르면 현재 디렉터리에 "C:"라는
+     * 디렉터리가 생긴다. 드라이브·UNC 접두부는 건너뛰고 그 뒤부터 만든다. */
+    size_t skip = fq_path_root_len(buf);
+    for (char *p = buf + (skip < n ? skip + 1 : n); *p; p++) {
         if (*p == '/') {
             *p = '\0';
             if (mkdir(buf, 0755) != 0 && errno != EEXIST) return FQ_ERR;
@@ -82,8 +85,11 @@ int fq_fs_rename_noreplace(const char *src, const char *dst)
         return FQ_ERR;
     }
     if (unlink(src) != 0) {
-        /* dst는 이미 만들어짐; src 정리 실패는 GC가 회수 */
-        return FQ_OK;
+        /* src가 남으면 같은 메시지가 두 곳에 있다(inflight의 src는 나중에 recover로 재전달).
+         * dst를 거둬 "옮기지 않음"으로 되돌린다. ENOENT면 그 사이 다른 쪽이 src를 옮긴 것이다. */
+        int e = errno;
+        unlink(dst);
+        return e == ENOENT ? FQ_ENOENT : FQ_ERR;
     }
     return FQ_OK;
 }
@@ -212,13 +218,13 @@ int fq_fs_mtime_ms(const char *path, uint64_t *out_ms)
     return FQ_OK;
 }
 
-int fq_fs_now_ms(const char *dir, uint64_t *out_ms)
+int fq_fs_now_ms(const char *dir, const char *tag, uint64_t *out_ms)
 {
     /* dir 안에 임시 파일을 만들어 그 mtime을 읽음 → FS 단일 시각 출처 */
-    char tmp[1280];
+    char tmp[1408];
     char id[64];
     fq_gen_id(id, sizeof(id));
-    snprintf(tmp, sizeof(tmp), "%s/.now-%s", dir, id);
+    snprintf(tmp, sizeof(tmp), "%s/.now-%s-%s", dir, tag, id);
 
     int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd < 0) return FQ_ERR;

@@ -29,9 +29,10 @@ int fq_open(const char *root, const char *node_id, fq_queue **out)
             if (!fq_valid_ident(env, sizeof(q->node_id) - 1)) { free(q); return FQ_EINVAL; }
             snprintf(q->node_id, sizeof(q->node_id), "%s", env);
         } else {
-            snprintf(q->node_id, sizeof(q->node_id), "node-%u", fq_pid());
+            fq_default_node_id(q->node_id, sizeof(q->node_id));
         }
     }
+    fq_gen_id(q->instance, sizeof(q->instance));
 
     /* 하위 디렉터리 생성 */
     const char *subs[] = { FQ_DIR_TMP, FQ_DIR_INCOMING, FQ_DIR_INFLIGHT,
@@ -68,7 +69,7 @@ uint64_t fq_fs_clock_est_ms(fq_queue *q)
         char tmp_dir[1280];
         fq_path(tmp_dir, sizeof(tmp_dir), q->root, FQ_DIR_TMP, NULL);
         uint64_t fs_now = 0;
-        if (fq_fs_now_ms(tmp_dir, &fs_now) == FQ_OK)
+        if (fq_fs_now_ms(tmp_dir, q->node_id, &fs_now) == FQ_OK)
             q->clock_offset_ms = (int64_t)fs_now - (int64_t)wall;
         q->clock_next_sync_ms = wall + FQ_CLOCK_SYNC_MS;
     }
@@ -79,26 +80,29 @@ uint64_t fq_fs_clock_est_ms(fq_queue *q)
 
 /* 메시지명에 쓸 시각(ms): 추정 FS 시각 + 단조 보정.
  * 모든 발행 노드가 같은 시계(FS)를 기준으로 이름을 붙이고, 마지막으로 발급한 값보다 작아지면
- * +1로 밀어 한 프로세스 안에서는 절대 역행하지 않는다. */
+ * 그 값에 머물러 한 프로세스 안에서는 절대 역행하지 않는다. 같은 ms 안의 순서는 seq가 정한다.
+ * (+1ms씩 밀면 초당 1000건 넘게 발행할 때 이름의 시각이 실제보다 계속 앞서 나가 다른 노드와의
+ * FIFO가 어긋난다.) */
 static uint64_t msg_clock_ms(fq_queue *q)
 {
     uint64_t now = fq_fs_clock_est_ms(q);
-    if (now <= q->last_msg_ms) now = q->last_msg_ms + 1;
+    if (now < q->last_msg_ms) now = q->last_msg_ms;
     q->last_msg_ms = now;
     return now;
 }
 
 /* 최종 메시지명: <epoch_ms>-<seq>-<producer>-<id>[.<stream>].msg
- * 앞쪽 시간+seq 로 best-effort FIFO 정렬. 시각은 msg_clock_ms (FS 시각 기준 보정값). */
+ * 앞쪽 시간+seq 로 best-effort FIFO 정렬. 시각은 msg_clock_ms (FS 시각 기준 보정값).
+ * seq는 10자리 고정폭: 같은 ms 안의 순서를 문자열 정렬로 보존한다(uint32 전 범위). */
 static void new_msg_name(fq_queue *q, const char *id, const char *stream_key, char *msg_name, size_t n)
 {
     uint64_t now = msg_clock_ms(q);
     uint32_t seq = ++q->seq;
     if (stream_key && stream_key[0])
-        snprintf(msg_name, n, "%016llu-%06u-%s-%s.%s.msg",
+        snprintf(msg_name, n, "%016llu-%010u-%s-%s.%s.msg",
                  (unsigned long long)now, seq, q->node_id, id, stream_key);
     else
-        snprintf(msg_name, n, "%016llu-%06u-%s-%s.msg",
+        snprintf(msg_name, n, "%016llu-%010u-%s-%s.msg",
                  (unsigned long long)now, seq, q->node_id, id);
 }
 
@@ -462,7 +466,7 @@ int fq_gc(fq_queue *q, uint64_t tmp_max_age_ms)
     fq_path(tmp_dir, sizeof(tmp_dir), q->root, FQ_DIR_TMP, NULL);
 
     uint64_t now = 0;
-    if (fq_fs_now_ms(tmp_dir, &now) != FQ_OK) return FQ_ERR;
+    if (fq_fs_now_ms(tmp_dir, q->node_id, &now) != FQ_OK) return FQ_ERR;
 
     gc_ctx c = { q, FQ_DIR_TMP, now > tmp_max_age_ms ? now - tmp_max_age_ms : 0, 0 };
     if (fq_fs_list(tmp_dir, gc_cb, &c) != FQ_OK) return FQ_ERR;

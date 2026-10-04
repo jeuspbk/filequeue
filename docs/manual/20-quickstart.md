@@ -58,7 +58,9 @@ int main(void) {
         fq_ack(q, m);                   /* 처리 완료 → inflight 삭제 (m도 해제됨) */
 
         /* 긴 루프라면 주기적으로 리스를 갱신해 리더십을 유지하고, 갱신마다 stale도 회수한다 */
-        /* if (fq_renew_lease(q, &lease) != FQ_OK) break;   리더십 상실 → 중단
+        /* rc = fq_renew_lease(q, &lease);
+           if (rc == FQ_ELOCKED) → 선출 락이 잠깐 잡힘, 잠시 후 다시 갱신
+           else if (rc != FQ_OK) break;                    리더십 상실 → 중단
            fq_recover_stale(q, &lease);                                          */
     }
     /* fq_claim 이 FQ_EEMPTY 를 반환하면 큐가 비었다는 뜻 */

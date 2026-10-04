@@ -44,7 +44,8 @@ typedef struct {
 
 /* ---- 생애주기 ---- */
 /* node_id: 이 노드의 식별자. 메시지 파일명과 리더십 id에 함께 쓰인다.
- *          NULL이면 환경변수 FQ_NODE_ID, 그것도 없으면 "node-<pid>"로 자동 설정.
+ *          NULL이면 환경변수 FQ_NODE_ID, 그것도 없으면 "<호스트명>-<pid>"로 자동 설정.
+ *          node_id가 같은 프로세스가 둘이어도 리더십은 핸들마다 구분된다(leader.info의 instance).
  *          허용 문자: 영문자·숫자·'.'·'-'·'_' (1~63자, "__" 금지). 어기면 FQ_EINVAL.
  *          공백은 leader.info 파싱을, "__"는 inflight 이름의 "__t<token>" 파싱을, '/'는 경로를 깨뜨린다. */
 int  fq_open(const char *root, const char *node_id, fq_queue **out);
@@ -58,7 +59,10 @@ int  fq_publish(fq_queue *q, const void *data, size_t len, const char *stream_ke
 /* ---- Consumer / 리더십 (Active-Passive) ---- */
 /* node_id는 fq_open에서 설정한 q->node_id를 사용한다. */
 int  fq_acquire_leadership(fq_queue *q, fq_lease *lease);
-int  fq_renew_lease(fq_queue *q, fq_lease *lease);            /* 하트비트 */
+/* fq_renew_lease: 하트비트. election.lock 안에서 갱신한다.
+ *   FQ_OK 연장됨, FQ_ENOLEADER 리더십을 잃음, FQ_ELOCKED 선출이 진행 중이라 이번엔 못 함
+ *   (리더십은 아직 유지될 수 있음 → 잠시 후 재시도), FQ_ERR 오류. */
+int  fq_renew_lease(fq_queue *q, fq_lease *lease);
 int  fq_recover_stale(fq_queue *q, const fq_lease *lease);    /* 선임자 inflight 회수 */
 int  fq_claim(fq_queue *q, const fq_lease *lease, fq_msg **out); /* FQ_EEMPTY 가능 */
 int  fq_ack(fq_queue *q, fq_msg *m);    /* inflight unlink (처리 완료) */
@@ -89,7 +93,8 @@ int  fq_consume(fq_queue *q, fq_msg **out);
 int  fq_consume_if(fq_queue *q, fq_want_fn want, void *ud, fq_msg **out);
 /* fq_consume 사용자용 하트비트. 메시지 하나를 처리하는 데 리스(FQ_LEASE_MS)보다 오래 걸릴 수
  * 있으면 처리 도중 주기적으로 호출해 리스를 연장한다(즉시 갱신, 주기 무시).
- * FQ_OK = 연장됨, FQ_ELOCKED = 리더가 아님(리더십을 잃었거나 아직 없음), FQ_ERR = 오류. */
+ * FQ_OK = 연장됨, FQ_ELOCKED = 리더가 아님(리더십을 잃었거나 아직 없음),
+ * FQ_ERR = 오류 또는 선출 락이 잠시 잡혀 있음(리더십은 유지 → 다시 호출하면 된다). */
 int  fq_heartbeat(fq_queue *q);
 
 /* ---- 2단계 발행 / 꺼내기 (트랜잭션 큐용) ----
@@ -101,8 +106,11 @@ int  fq_heartbeat(fq_queue *q);
  *           FQ_ENOENT = path가 없음(이미 넣었음).
  * fq_take : claim한 메시지 m을 큐에서 꺼내 path로 옮긴다(ack 대신). 성공하면 m은 해제되고
  *           path의 디렉터리를 fsync한다. 실패하면 m은 claim 상태 그대로(fq_nack 가능).
+ *           POSIX에서는 link+unlink 두 단계라, 그 사이에 크래시하면 path와 inflight에 같은
+ *           메시지가 남고 inflight 쪽은 나중에 복구되어 다시 전달된다(at-least-once 범위의 중복).
  * fq_return: fq_take로 꺼낸 파일을 fq_nack처럼 되돌린다. attempt = 꺼낼 때의 m->attempt;
  *           attempt+1로 incoming에 넣고, FQ_MAX_ATTEMPTS에 닿으면 dead/로 옮긴다.
+ *           이름은 새로 붙는다(발행 시각 = 지금, stream_key 없음): 원래 순서와 파티션은 유지되지 않는다.
  *           FQ_ENOENT = path가 없음(이미 되돌렸음). */
 int  fq_adopt(fq_queue *q, const char *path, const char *stream_key);
 int  fq_take(fq_queue *q, fq_msg *m, const char *path);

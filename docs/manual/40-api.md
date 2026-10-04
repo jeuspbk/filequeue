@@ -60,7 +60,7 @@ typedef struct {
 
 | 함수 | 시그니처 | 설명 |
 |---|---|---|
-| `fq_open` | `int fq_open(const char *root, const char *node_id, fq_queue **out)` | 큐를 열고 하위 디렉터리를 생성. `node_id`는 이 노드의 식별자(메시지 파일명·리더십 id 겸용). `NULL`이면 `FQ_NODE_ID` 환경변수 → `node-<pid>` 순으로 폴백. 형식이 어긋나면 `FQ_EINVAL`. |
+| `fq_open` | `int fq_open(const char *root, const char *node_id, fq_queue **out)` | 큐를 열고 하위 디렉터리를 생성. `node_id`는 이 노드의 식별자(메시지 파일명·리더십 id 겸용). `NULL`이면 `FQ_NODE_ID` 환경변수 → `<호스트명>-<pid>` 순으로 폴백. 형식이 어긋나면 `FQ_EINVAL`. |
 | `fq_close` | `void fq_close(fq_queue *q)` | 큐 핸들 해제. |
 
 ## 생산자 함수
@@ -74,7 +74,7 @@ typedef struct {
 | 함수 | 시그니처 | 설명 |
 |---|---|---|
 | `fq_acquire_leadership` | `int fq_acquire_leadership(fq_queue *q, fq_lease *lease)` | 리더십 획득 시도(식별자는 `q->node_id` 사용). 유효한 다른 리더가 있으면 `FQ_ELOCKED`. 성공 시 `lease`에 새 token 발급. |
-| `fq_renew_lease` | `int fq_renew_lease(fq_queue *q, fq_lease *lease)` | 하트비트. 여전히 내가 리더면 만료시각 연장. 아니면 `FQ_ENOLEADER`. |
+| `fq_renew_lease` | `int fq_renew_lease(fq_queue *q, fq_lease *lease)` | 하트비트. `election.lock` 안에서 여전히 내가 리더인지 확인하고 만료시각 연장. 아니면 `FQ_ENOLEADER`. 선출이 진행 중이라 락이 잡혀 있으면 `FQ_ELOCKED`(리더십은 유지될 수 있음 → 잠시 후 재시도). |
 | `fq_recover_stale` | `int fq_recover_stale(fq_queue *q, const fq_lease *lease)` | 옛 token의 inflight(죽은 선임자·좀비 것)를 `incoming/`으로 회수(attempt+1, 한도 초과 시 `dead/`). 인수 직후와 **매 하트비트마다** 호출. |
 | `fq_claim` | `int fq_claim(fq_queue *q, const fq_lease *lease, fq_msg **out)` | 가장 오래된 메시지를 점유. 비었으면 `FQ_EEMPTY`. |
 | `fq_ack` | `int fq_ack(fq_queue *q, fq_msg *m)` | 처리 완료. inflight 삭제 + `m` 해제. |
@@ -106,7 +106,7 @@ typedef int (*fq_want_fn)(const void *data, size_t len, void *ud);
 |---|---|---|
 | `fq_consume` | `int fq_consume(fq_queue *q, fq_msg **out)` | 리더십 획득/유지·`recover_stale`·하트비트·`claim`을 자동 처리하고 다음 메시지를 반환. 식별자는 `q->node_id` 사용. |
 | `fq_consume_if` | `int fq_consume_if(fq_queue *q, fq_want_fn want, void *ud, fq_msg **out)` | `fq_consume`과 같되 `fq_claim_if`로 고른다. |
-| `fq_heartbeat` | `int fq_heartbeat(fq_queue *q)` | `fq_consume` 사용자용 하트비트. 주기와 무관하게 즉시 리스를 연장하고 stale inflight를 회수한다. `FQ_OK` 연장됨, `FQ_ELOCKED` 리더가 아님, `FQ_ERR` 오류. |
+| `fq_heartbeat` | `int fq_heartbeat(fq_queue *q)` | `fq_consume` 사용자용 하트비트. 주기와 무관하게 즉시 리스를 연장하고 stale inflight를 회수한다. `FQ_OK` 연장됨, `FQ_ELOCKED` 리더가 아님, `FQ_ERR` 오류 또는 선출 락이 잠시 잡혀 있음(리더십 유지, 다시 호출). |
 
 반환값:
 
@@ -126,13 +126,14 @@ typedef int (*fq_want_fn)(const void *data, size_t len, void *ud);
 
 트랜잭션 관리자가 큐 밖(**같은 파일시스템**)의 파일에 메시지를 보관했다가 결정에 따라 원자적 rename
 한 번으로 큐에 넣거나 뺀다. 원본이 옮겨지면 사라지므로 크래시 후 같은 호출을 다시 해도 중복이
-생기지 않는다(멱등).
+생기지 않는다(멱등). 단 POSIX의 `fq_take`는 link+unlink 두 단계라, 그 사이 크래시하면 같은 메시지가
+`path`와 `inflight/`에 함께 남고 inflight 쪽은 나중에 복구되어 다시 전달된다(at-least-once 범위의 중복).
 
 | 함수 | 시그니처 | 설명 |
 |---|---|---|
 | `fq_adopt` | `int fq_adopt(fq_queue *q, const char *path, const char *stream_key)` | 이미 영속된(fsync된) 파일 `path`를 새 메시지로 큐에 넣는다(발행 시각은 지금). `FQ_ENOENT` = `path`가 없음(이미 넣었음). |
 | `fq_take` | `int fq_take(fq_queue *q, fq_msg *m, const char *path)` | claim한 `m`을 큐에서 꺼내 `path`로 옮긴다(ack 대신). 성공하면 `m` 해제 + `path` 디렉터리 fsync. 실패하면 `m`은 claim 상태 그대로(`fq_nack` 가능). |
-| `fq_return` | `int fq_return(fq_queue *q, const char *path, uint32_t attempt)` | `fq_take`로 꺼낸 파일을 `fq_nack`처럼 되돌린다. `attempt`는 꺼낼 때의 `m->attempt`; attempt+1로 `incoming/`에 넣고 한도에 닿으면 `dead/`. `FQ_ENOENT` = 이미 되돌렸음. |
+| `fq_return` | `int fq_return(fq_queue *q, const char *path, uint32_t attempt)` | `fq_take`로 꺼낸 파일을 `fq_nack`처럼 되돌린다. `attempt`는 꺼낼 때의 `m->attempt`; attempt+1로 `incoming/`에 넣고 한도에 닿으면 `dead/`. 이름은 새로 붙어(시각 = 지금, stream_key 없음) 원래 순서·파티션은 유지되지 않는다. `FQ_ENOENT` = 이미 되돌렸음. |
 
 ## 유지보수 함수
 

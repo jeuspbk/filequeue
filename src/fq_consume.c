@@ -19,9 +19,18 @@ static uint64_t renew_interval_ms(void)
 /* 하트비트 1회: 리스 갱신 + 선임자/좀비가 남긴 stale inflight 회수.
  * 복구를 인수 때 한 번만 하면, 그 뒤에 옛 token으로 claim한 좀비의 inflight는 다음 failover까지
  * 방치된다. 하트비트마다 inflight를 한 번 훑어(대개 수 개) 회수한다. */
+#define HEARTBEAT_LOCK_RETRIES 5   /* election.lock이 잠깐 잡혀 있을 때 재시도 횟수 (10ms 간격) */
+
+/* 반환: FQ_OK 갱신됨, FQ_ELOCKED 리더십 상실, FQ_EEXIST election.lock이 계속 잡혀 있어 이번엔 못 함
+ * (리더십은 아직 유지, 리스 자체 만료 감지가 안전망), FQ_ERR 오류. */
 static int heartbeat_now(fq_queue *q, uint64_t now)
 {
     int rc = fq_renew_lease(q, &q->lead_lease);
+    for (int i = 0; rc == FQ_ELOCKED && i < HEARTBEAT_LOCK_RETRIES; i++) {
+        fq_sleep_ms(10);
+        rc = fq_renew_lease(q, &q->lead_lease);
+    }
+    if (rc == FQ_ELOCKED)   return FQ_EEXIST;
     if (rc == FQ_ENOLEADER) { q->lead_held = 0; return FQ_ELOCKED; } /* 리더십 상실 */
     if (rc != FQ_OK)        return FQ_ERR;
     q->lead_last_renew_ms = now;
@@ -58,7 +67,9 @@ static int lead(fq_queue *q)
         q->lead_next_renew_ms = now + renew_interval_ms();
         fq_recover_stale(q, &q->lead_lease);        /* 인수 직후 1회 회수 */
     } else if (now >= q->lead_next_renew_ms) {
-        return heartbeat_now(q, now);
+        int rc = heartbeat_now(q, now);
+        if (rc == FQ_EEXIST) return FQ_OK;   /* 다음 호출에 다시 갱신 (next_renew 그대로) */
+        return rc;
     }
     return FQ_OK;
 }
@@ -66,7 +77,8 @@ static int lead(fq_queue *q)
 int fq_heartbeat(fq_queue *q)
 {
     if (!q->lead_held) return FQ_ELOCKED;
-    return heartbeat_now(q, fq_now_wall_ms());
+    int rc = heartbeat_now(q, fq_now_wall_ms());
+    return rc == FQ_EEXIST ? FQ_ERR : rc;    /* 일시적: 리더십은 유지, 다시 호출하면 된다 */
 }
 
 int fq_consume(fq_queue *q, fq_msg **out)

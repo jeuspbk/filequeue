@@ -22,6 +22,9 @@
 struct fq_queue {
     char     root[1024];
     char     node_id[64];    /* 이 노드의 식별자. 메시지 파일명(producer)과 리더십 id 겸용. */
+    char     instance[40];   /* 핸들마다 새로 만드는 nonce. leader.info 4번째 필드.
+                                node_id가 같은 두 프로세스(컨테이너의 pid 1 등)를 구분해,
+                                한쪽이 상대의 유효한 리스를 "내 것"으로 보고 빼앗지 않게 한다. */
     uint32_t seq;            /* 발행 시퀀스 (프로세스 로컬, 비스레드세이프 - 스캐폴드) */
 
     /* 메시지명 시각 = 로컬 벽시계 + 오프셋(공유 FS 시각 - 로컬 벽시계).
@@ -53,7 +56,12 @@ uint64_t fq_lease_ms(void);                    /* 유효 리스(ms). FQ_LEASE_MS
 /* 파일명에 들어가는 식별자 검증: [A-Za-z0-9._-], 1..max_len자, "__" 금지. 1=유효 */
 int      fq_valid_ident(const char *s, size_t max_len);
 uint32_t fq_pid(void);
-void     fq_gen_id(char *buf, size_t n);       /* 유일 토큰 hex (pid+seq+time 기반) */
+void     fq_gen_id(char *buf, size_t n);       /* 유일 토큰 hex (pid+salt+카운터+time). 스레드 안전 */
+void     fq_default_node_id(char *buf, size_t n); /* "<호스트명>-<pid>" (식별자 규칙에 맞게 정리) */
+void     fq_sleep_ms(unsigned ms);
+/* 경로 앞의 만들 수 없는 접두부 길이: 드라이브 "X:"는 2, UNC "\\srv\share"·"//srv/share"는
+ * share 뒤 구분자의 위치, 그 밖에는 0. fq_fs_mkdirs가 이 부분을 건너뛴다. */
+size_t   fq_path_root_len(const char *path);
 char    *fq_strdup(const char *s);
 
 /* "<root>/<sub>/<name>" 조합. name이 NULL이면 "<root>/<sub>". */

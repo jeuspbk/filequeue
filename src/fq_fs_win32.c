@@ -24,7 +24,10 @@ int fq_fs_mkdirs(const char *path)
     if (n >= sizeof(buf)) return FQ_ERR;
     memcpy(buf, path, n + 1);
 
-    for (char *p = buf + 1; *p; p++) {
+    /* 드라이브("C:")·UNC("\\srv\share") 접두부는 만들 수 없다: CreateDirectory("\\srv")는 실패한다.
+     * 건너뛰고 그 뒤부터 만든다. */
+    size_t skip = fq_path_root_len(buf);
+    for (char *p = buf + (skip < n ? skip + 1 : n); *p; p++) {
         if (*p == '/' || *p == '\\') {
             char c = *p; *p = '\0';
             if (!CreateDirectoryA(buf, NULL) &&
@@ -57,12 +60,22 @@ int fq_fs_write_sync(const char *path, const void *data, size_t len)
     return flushed ? FQ_OK : FQ_ERR;
 }
 
+/* 다른 핸들이 열고 있는 대상을 교체하거나(leader.info를 대기 노드가 읽는 중), 경합 상대가 옮기는
+ * 중인 src를 rename하면 ACCESS_DENIED/SHARING_VIOLATION이 잠깐 날 수 있다. 그대로 FQ_ERR로 돌려주면
+ * 하트비트나 claim이 실패하므로 짧게 재시도한다. 경합에서 진 claim은 재시도 뒤 FILE_NOT_FOUND가 된다.
+ * (MSVC 실기 검증 필요) */
+#define FQ_RENAME_RETRIES 10
+
 int fq_fs_rename(const char *src, const char *dst)
 {
-    if (MoveFileExA(src, dst, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) return FQ_OK;
-    DWORD e = GetLastError();
-    if (e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND) return FQ_ENOENT;
-    return FQ_ERR;
+    for (int i = 0;; i++) {
+        if (MoveFileExA(src, dst, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) return FQ_OK;
+        DWORD e = GetLastError();
+        if (e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND) return FQ_ENOENT;
+        if ((e != ERROR_ACCESS_DENIED && e != ERROR_SHARING_VIOLATION) || i >= FQ_RENAME_RETRIES)
+            return FQ_ERR;
+        Sleep(1);
+    }
 }
 
 int fq_fs_rename_noreplace(const char *src, const char *dst)
@@ -144,7 +157,7 @@ int fq_fs_fsync_dir(const char *path)
 
 int fq_fs_list(const char *dir, fq_dir_cb cb, void *ud)
 {
-    char pat[1024];
+    char pat[1408];
     snprintf(pat, sizeof(pat), "%s/*", dir);
 
     WIN32_FIND_DATAA fd;
@@ -218,11 +231,11 @@ int fq_fs_mtime_ms(const char *path, uint64_t *out_ms)
     return FQ_OK;
 }
 
-int fq_fs_now_ms(const char *dir, uint64_t *out_ms)
+int fq_fs_now_ms(const char *dir, const char *tag, uint64_t *out_ms)
 {
-    char tmp[1280], id[64];
+    char tmp[1408], id[64];
     fq_gen_id(id, sizeof(id));
-    snprintf(tmp, sizeof(tmp), "%s/.now-%s", dir, id);
+    snprintf(tmp, sizeof(tmp), "%s/.now-%s-%s", dir, tag, id);
 
     HANDLE h = CreateFileA(tmp, GENERIC_WRITE, 0, NULL,
                            CREATE_ALWAYS, FILE_FLAG_WRITE_THROUGH, NULL);

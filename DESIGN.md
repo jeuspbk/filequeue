@@ -134,9 +134,19 @@ inflight/<이름>.msg[.a<attempt>]__t<token>    # claim 시 리더 token을 stam
 
 ### 4-1. 리스(lease) 기반 리더 선출
 
-- `leader.info` = `{ leader_id, fencing_token, lease_expiry }`
+- `leader.info` = `{ leader_id, fencing_token, lease_expiry, instance }`
+  - `instance`는 리스를 쓴 **핸들의 nonce**(fq_open마다 새로 생성). node_id만으로 "내 리스"를 판정하면
+    node_id가 같은 두 프로세스(컨테이너마다 pid 1이라 `node-1`, 이미지에 박힌 `FQ_NODE_ID`)가 서로의
+    유효한 리스를 자기 것으로 보고 계속 빼앗는다 — 오류 없이 사실상 Active-Active가 된다.
+    같은 id라도 instance가 다르면 다른 리더로 본다(재시작한 노드는 옛 리스 만료를 기다린다).
+    옛 3필드 포맷도 읽으며 그때 instance는 빈 값이다. 기본 node_id는 `<호스트명>-<pid>`.
 - 리더는 주기적으로 `leader.info`를 다시 써서(tmp + 원자 교체) `lease_expiry`를 연장한다(하트비트).
-  별도 heartbeat 파일은 없다.
+  별도 heartbeat 파일은 없다. **하트비트도 `election.lock` 안에서 읽고-확인하고-쓴다.** 락 없이 쓰면,
+  읽은 뒤 멈춘(fsync 지연, NFS 정지) 옛 리더가 그 사이 인수한 새 리더의 leader.info를 옛 token으로
+  덮어써 token이 되돌아가고, 다음 인수자가 같은 token을 다시 발급한다(fencing 붕괴 + 새 리더의
+  inflight가 `token >= 내 token`이라 회수되지 않음). 락이 잡혀 있으면 갱신은 `FQ_ELOCKED`(나중에
+  재시도)를 돌려준다. 락은 대기 노드가 리스 만료(또는 교체 순간의 "리더 없음")를 관측했을 때만
+  경합하므로 살아 있는 리더의 갱신 공백은 ms 단위다(`test_election`이 측정).
 - 대기 노드는 `leader.info`를 폴링한다. 폴링마다 FS 시각을 재면(파일 생성+stat+삭제) 공유 스토리지에
   메타데이터 쓰기가 쏟아지므로, 먼저 **추정 FS 시각**(§4-4의 오프셋 캐시)으로 비교해 리스가 유효하면
   파일을 만들지 않고 양보한다. 추정상 만료일 때만 실제 FS 시각을 잰다. 추정이 늦으면 인수가 최대
@@ -145,8 +155,10 @@ inflight/<이름>.msg[.a<attempt>]__t<token>    # claim 시 리더 token을 stam
   1. `CREATE_NEW`로 `control/election.lock` 생성 시도 → 성공한 1개 노드만 선출 진행 (atomic create = mutex)
   2. 승자는 **락 안에서 `leader.info`를 다시 읽어** 리스가 여전히 만료 상태인지 재확인한다
      (락 밖에서 읽은 값으로 진행하면 차례로 락을 잡은 두 노드가 같은 token을 쓴다)
-  3. `fencing_token`을 +1 증가시켜 `leader.info`를 tmp + **교체형 원자 rename**으로 바꾸고 새 리스 설정.
-     하트비트도 같은 경로를 쓴다. 삭제→생성 두 단계는 금지: 그 사이에 읽는 노드가 "리더 없음"을 보고
+  3. 새 token = **max(leader.info의 token, `inflight/`에 stamp된 최대 token) + 1**로 `leader.info`를
+     tmp + **교체형 원자 rename**으로 바꾸고 새 리스 설정. inflight를 보는 것은 leader.info가 어떤
+     이유로든(손상, stale 락 회수 뒤 늦게 도착한 쓰기) 되돌아가도 살아 있는 inflight와 token이
+     겹치지 않게 하기 위함이다. 삭제→생성 두 단계는 금지: 그 사이에 읽는 노드가 "리더 없음"을 보고
      살아 있는 리더를 밀어낸다
   4. `election.lock` 삭제
 - 선출 도중 크래시 대비: `election.lock`이 임계시간보다 오래되면 강제 정리(stale lock 회수)
@@ -187,8 +199,9 @@ inflight/<이름>.msg[.a<attempt>]__t<token>    # claim 시 리더 token을 stam
 어긋나면 노드 간 FIFO가 깨지고, NTP가 시계를 되돌리면 한 노드 안에서도 뒤집힌다. 발행마다 FS 시각을
 읽으면 발행 비용이 두 배가 되므로, 대신 **오프셋 캐시**를 쓴다: 프로세스마다 `FS 시각 - 로컬 벽시계`를
 `FQ_CLOCK_SYNC_MS`(30초)마다 한 번 재서, 이름에는 `로컬 벽시계 + 오프셋`을 쓴다. 여기에 **단조 보정**
-(직전 발급값 이하이면 +1)을 더해 재동기 사이에 로컬 시계가 뒤로 점프해도 한 프로세스 안에서는 역행하지
-않는다. 남는 한계: 재동기 사이에 로컬 시계가 앞으로 점프한 구간, FS mtime 해상도(FAT·일부 SMB는 1~2초),
+(직전 발급값보다 작으면 그 값에 머묾)을 더해 재동기 사이에 로컬 시계가 뒤로 점프해도 한 프로세스 안에서는 역행하지
+않는다. 같은 ms 안의 순서는 10자리 고정폭 `seq`가 이름 정렬로 보존한다. (예전처럼 +1ms씩 밀면 초당
+1000건 넘게 발행할 때 이름의 시각이 실제보다 계속 앞서 나가 다른 노드와의 FIFO가 어긋난다.) 남는 한계: 재동기 사이에 로컬 시계가 앞으로 점프한 구간, FS mtime 해상도(FAT·일부 SMB는 1~2초),
 그리고 프로세스 재시작 시 `seq`가 0부터 다시 시작하는 것 — 모두 best-effort FIFO 범위 안이다.
 
 ---

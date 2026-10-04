@@ -94,7 +94,7 @@ if [ -x "$ELECTION" ]; then
   wait "$PB"; RB=$?
   echo "  $(cat "$WORK/cA.out")"
   echo "  $(cat "$WORK/cB.out")"
-  [ "$RA" -eq 0 ] && pass "리더 A가 리더십을 한 번도 잃지 않음" || fail "리더 A가 리더십을 잃음"
+  [ "$RA" -eq 0 ] && pass "리더 A가 리더십을 한 번도 잃지 않음 (갱신 공백 < 1s)" || fail "리더 A가 리더십을 잃거나 갱신 공백이 김"
   [ "$RB" -eq 0 ] && pass "대기 노드 B의 탈취 0회" || fail "대기 노드 B가 리더십을 탈취함"
 else
   echo "== [C] 건너뜀: test_election 없음 ($ELECTION) =="

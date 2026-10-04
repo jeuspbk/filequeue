@@ -57,8 +57,8 @@ int  fq_fs_unlock(fq_lock *lock);
 /* 파일 mtime을 ms로. */
 int  fq_fs_mtime_ms(const char *path, uint64_t *out_ms);
 
-/* FS 자체 시각을 ms로 (dir에 임시 파일을 만들어 mtime을 읽음).
- * 노드 간 clock skew를 피하기 위한 단일 시각 출처. */
-int  fq_fs_now_ms(const char *dir, uint64_t *out_ms);
+/* FS 자체 시각을 ms로 (dir에 임시 파일 ".now-<tag>-<id>"를 만들어 mtime을 읽음).
+ * 노드 간 clock skew를 피하기 위한 단일 시각 출처. dir이 공유 디렉터리이므로 tag에는 node_id를 줄 것. */
+int  fq_fs_now_ms(const char *dir, const char *tag, uint64_t *out_ms);
 
 #endif /* FQ_FS_H */

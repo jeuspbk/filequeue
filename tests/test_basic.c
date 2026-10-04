@@ -156,6 +156,66 @@ int main(int argc, char **argv)
         CHECK(fq_fs_exists(p) == 1, "leader.info는 보존");
     }
 
+    /* [7] 리더십 경합 회귀: 같은 node_id 두 핸들, 갱신의 락 직렬화, token high-water */
+    printf("[7] 리더십 경합 회귀\n");
+    {
+        char lr[1100], li[1408], lk[1408], inf[1408];
+        snprintf(lr, sizeof(lr), "%s-lead", root);
+        fq_queue *d1 = NULL, *d2 = NULL;
+        CHECK(fq_open(lr, "dup", &d1) == FQ_OK && fq_open(lr, "dup", &d2) == FQ_OK,
+              "같은 node_id로 핸들 2개 open");
+        fq_path(li, sizeof(li), lr, FQ_LEADER_INFO, NULL);
+        fq_path(lk, sizeof(lk), lr, FQ_ELECTION_LCK, NULL);
+        fq_path(inf, sizeof(inf), lr, FQ_DIR_INFLIGHT, "0-0-x-y.msg__t10");
+        fq_fs_write_sync(li, "none 0 0\n", 9);        /* 재실행 대비: 이전 리스 무효화 */
+        fq_fs_unlink(lk);
+        fq_fs_unlink(inf);
+
+        fq_lease l1, l2;
+        CHECK(fq_acquire_leadership(d1, &l1) == FQ_OK, "핸들1 인수");
+        CHECK(fq_acquire_leadership(d2, &l2) == FQ_ELOCKED,
+              "node_id가 같아도 다른 핸들은 유효한 리스를 빼앗지 못함");
+        CHECK(fq_renew_lease(d1, &l1) == FQ_OK, "핸들1 갱신 유지");
+
+        /* 선출이 진행 중(election.lock 보유)이면 갱신은 leader.info를 건드리지 않고 ELOCKED */
+        CHECK(fq_fs_create_new(lk) == FQ_OK, "election.lock 점유 흉내");
+        uint64_t before = l1.lease_expiry_ms;
+        CHECK(fq_renew_lease(d1, &l1) == FQ_ELOCKED && l1.lease_expiry_ms == before,
+              "락이 잡혀 있으면 갱신은 ELOCKED (leader.info 그대로)");
+        fq_fs_unlink(lk);
+        CHECK(fq_renew_lease(d1, &l1) == FQ_OK, "락이 풀리면 갱신 성공");
+
+        /* leader.info가 되돌아가도(token 3) inflight에 남은 token 10보다 큰 token을 발급 */
+        fq_fs_write_sync(li, "old 3 1\n", 8);
+        fq_fs_write_sync(inf, "z", 1);
+        CHECK(fq_acquire_leadership(d2, &l2) == FQ_OK && l2.token == 11,
+              "새 token = max(leader.info, inflight) + 1");
+        CHECK(fq_renew_lease(d1, &l1) == FQ_ENOLEADER, "옛 핸들의 갱신은 ENOLEADER");
+
+        fq_fs_unlink(inf);
+        fq_fs_write_sync(li, "none 0 0\n", 9);
+        fq_close(d1);
+        fq_close(d2);
+    }
+
+    /* [8] 경로 접두부: 드라이브·UNC는 mkdirs가 만들지 않는다 */
+    printf("[8] 경로 접두부\n");
+    CHECK(fq_path_root_len("D:/q") == 2, "드라이브 문자");
+    CHECK(fq_path_root_len("//srv/share/q") == 11, "UNC (/)");
+    CHECK(fq_path_root_len("\\\\srv\\share\\q") == 11, "UNC (\\)");
+    CHECK(fq_path_root_len("/a/b") == 0 && fq_path_root_len("rel/x") == 0, "일반 경로");
+
+    /* [9] 기본 node_id = <호스트명>-<pid>, 식별자 규칙 만족 */
+    if (!getenv("FQ_NODE_ID")) {
+        printf("[9] 기본 node_id\n");
+        fq_queue *dq = NULL;
+        CHECK(fq_open(root, NULL, &dq) == FQ_OK && dq, "node_id 없이 open");
+        if (dq) {
+            CHECK(fq_valid_ident(dq->node_id, 63) && strchr(dq->node_id, '-'), dq->node_id);
+            fq_close(dq);
+        }
+    }
+
     fq_close(q);
     printf("\n== 결과: %s (%d 실패) ==\n", fails ? "FAIL" : "PASS", fails);
     return fails ? 1 : 0;

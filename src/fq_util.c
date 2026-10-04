@@ -62,12 +62,31 @@ uint32_t fq_pid(void)
 #endif
 }
 
+void fq_sleep_ms(unsigned ms)
+{
+#if defined(_WIN32) && !defined(__CYGWIN__)
+    Sleep(ms);
+#else
+    struct timespec ts = { (time_t)(ms / 1000), (long)(ms % 1000) * 1000000L };
+    nanosleep(&ts, NULL);
+#endif
+}
+
+/* 프로세스 전역 카운터. 스레드마다 핸들을 따로 열어 발행해도 id가 겹치지 않도록 원자적으로 늘린다.
+ * (node_id가 같으므로 id가 겹치면 tmp 이름이 같아져 한쪽 메시지가 조용히 사라진다.) */
+#if defined(_WIN32) && !defined(__CYGWIN__)
+static volatile LONG gen_ctr = 0;
+#  define GEN_CTR_NEXT() ((uint32_t)InterlockedIncrement(&gen_ctr))
+#else
+static uint32_t gen_ctr = 0;
+#  define GEN_CTR_NEXT() (__atomic_add_fetch(&gen_ctr, 1u, __ATOMIC_RELAXED))
+#endif
+
 void fq_gen_id(char *buf, size_t n)
 {
-    static uint32_t ctr = 0;
-    static uint32_t salt = 0;
+    static uint32_t salt = 0;   /* 동시 초기화로 값이 갈려도 카운터가 유일하므로 무해 */
     uint64_t t = fq_now_wall_ms();
-    uint32_t c = ++ctr;
+    uint32_t c = GEN_CTR_NEXT();
     /* pid+카운터+ms만으로는 pid가 같은 두 노드가 같은 ms에 같은 번째 id를 만들 수 있다
      * (공유 tmp/·control/에서 파일명 충돌 → 덮어쓰기). 프로세스마다 한 번 정하는 salt
      * (첫 호출 시각 해시 ^ 스택 주소(ASLR) ^ pid 해시)를 섞어 그 확률을 없앤다. */
@@ -77,6 +96,48 @@ void fq_gen_id(char *buf, size_t n)
         if (salt == 0) salt = 1;
     }
     snprintf(buf, n, "%08x%08x%08x%08x", fq_pid(), salt, c, (uint32_t)(t & 0xffffffffu));
+}
+
+void fq_default_node_id(char *buf, size_t n)
+{
+    /* pid만 쓰면 컨테이너마다 pid 1이라 모든 노드가 "node-1"이 된다. 호스트명을 붙인다.
+     * 식별자 규칙([A-Za-z0-9._-], "__" 금지)에 맞지 않는 문자는 '-'로 바꾼다. */
+    char host[256] = "";
+#if defined(_WIN32) && !defined(__CYGWIN__)
+    DWORD hn = (DWORD)sizeof(host);
+    if (!GetComputerNameA(host, &hn)) host[0] = '\0';
+#else
+    if (gethostname(host, sizeof(host)) != 0) host[0] = '\0';
+    host[sizeof(host) - 1] = '\0';
+#endif
+    char clean[41];
+    size_t k = 0;
+    for (const char *p = host; *p && k < sizeof(clean) - 1; p++) {
+        char c = *p;
+        int ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                 (c >= '0' && c <= '9') || c == '.' || c == '-' || c == '_';
+        if (!ok || (c == '_' && k > 0 && clean[k - 1] == '_')) c = '-';
+        clean[k++] = c;
+    }
+    clean[k] = '\0';
+    snprintf(buf, n, "%s-%u", k ? clean : "node", fq_pid());
+}
+
+size_t fq_path_root_len(const char *p)
+{
+#define IS_SEP(c) ((c) == '/' || (c) == '\\')
+    if (IS_SEP(p[0]) && IS_SEP(p[1])) {
+        /* UNC: \\server\share 또는 //server/share → share 뒤 구분자(또는 끝)까지 */
+        size_t i = 2;
+        int parts = 0;
+        for (; p[i]; i++)
+            if (IS_SEP(p[i]) && ++parts == 2) break;
+        return i;
+    }
+    if (((p[0] >= 'a' && p[0] <= 'z') || (p[0] >= 'A' && p[0] <= 'Z')) && p[1] == ':')
+        return 2;   /* 드라이브 문자 */
+    return 0;
+#undef IS_SEP
 }
 
 char *fq_strdup(const char *s)

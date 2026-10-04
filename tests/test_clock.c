@@ -17,6 +17,7 @@ static int fails = 0;
 static char     seen[64][512];
 static int      seen_n;
 static uint64_t new_ms;
+static char     new_name[512];
 
 static int mark_cb(const char *name, void *ud)
 {
@@ -30,6 +31,7 @@ static int find_new_cb(const char *name, void *ud)
     for (int i = 0; i < seen_n; i++)
         if (strcmp(seen[i], name) == 0) return 0;
     new_ms = strtoull(name, NULL, 10);
+    snprintf(new_name, sizeof(new_name), "%s", name);
     return 0;
 }
 
@@ -72,7 +74,7 @@ int main(int argc, char **argv)
     printf("[1] FS 시각 동기화\n");
     uint64_t t1 = publish_and_read_ms(q, inc);
     uint64_t fs_now = 0;
-    CHECK(fq_fs_now_ms(tmp, &fs_now) == FQ_OK, "fq_fs_now_ms");
+    CHECK(fq_fs_now_ms(tmp, "test", &fs_now) == FQ_OK, "fq_fs_now_ms");
     CHECK(t1 != 0 && absdiff(t1, fs_now) < 5000, "이름 시각이 FS 시각과 5초 이내");
     CHECK(q->clock_next_sync_ms != 0, "재동기 시각 설정됨");
 
@@ -83,21 +85,25 @@ int main(int argc, char **argv)
     q->clock_next_sync_ms = fq_now_wall_ms() + FQ_CLOCK_SYNC_MS; /* 재동기 억제 */
     uint64_t t2 = publish_and_read_ms(q, inc);
     CHECK(absdiff(t2, fq_now_wall_ms() + (uint64_t)skew) < 5000, "이름 시각 = 벽시계 + 오프셋");
+    char n2[512]; snprintf(n2, sizeof(n2), "%s", new_name);
 
-    /* [3] 단조 보정: 로컬 시계가 뒤로 가도(오프셋을 확 줄여 흉내) 이름 시각은 역행하지 않는다 */
+    /* [3] 단조 보정: 로컬 시계가 뒤로 가도(오프셋을 확 줄여 흉내) 이름 시각은 역행하지 않는다.
+     *     직전 값에 머물고(+1ms씩 앞서 나가지 않음), 같은 ms 안의 순서는 seq가 이름 정렬로 보존한다. */
     printf("[3] 단조 보정\n");
     q->clock_offset_ms = -skew;                       /* 2시간 뒤로 점프한 셈 */
     uint64_t t3 = publish_and_read_ms(q, inc);
-    CHECK(t3 == t2 + 1, "역행 대신 직전 값 + 1");
+    char n3[512]; snprintf(n3, sizeof(n3), "%s", new_name);
+    CHECK(t3 == t2, "역행 대신 직전 값에 머묾");
     uint64_t t4 = publish_and_read_ms(q, inc);
-    CHECK(t4 == t3 + 1, "계속 단조 증가");
+    CHECK(t4 == t2, "같은 ms가 쌓여도 시각이 앞서 나가지 않음");
+    CHECK(strcmp(n2, n3) < 0 && strcmp(n3, new_name) < 0, "같은 ms 안의 이름 정렬 = 발행 순서(seq)");
 
     /* [4] 재동기: 동기 시각이 지나면 FS 시각으로 다시 맞춘다 (가짜 오프셋이 사라져야 함) */
     printf("[4] 재동기\n");
     q->clock_next_sync_ms = 1;                        /* 즉시 재동기 */
     q->last_msg_ms = 0;                               /* 단조 보정이 가리지 않도록 */
     uint64_t t5 = publish_and_read_ms(q, inc);
-    CHECK(fq_fs_now_ms(tmp, &fs_now) == FQ_OK && absdiff(t5, fs_now) < 5000,
+    CHECK(fq_fs_now_ms(tmp, "test", &fs_now) == FQ_OK && absdiff(t5, fs_now) < 5000,
           "재동기 후 이름 시각 ≈ FS 시각");
     CHECK((q->clock_offset_ms < 0 ? -q->clock_offset_ms : q->clock_offset_ms) < 5000,
           "오프셋이 실제 값(≈0)으로 복원");

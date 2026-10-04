@@ -80,10 +80,13 @@ fq_fs_posix.c / fq_fs_win32.c   (플랫폼 원자 연산 추상화)
   파일명 포맷을 바꾸면 이 두 함수와 `fq_queue.c`/`fq_leader.c`의 생성부를 함께 고쳐야 한다.
 
 ### Failover (Active-Passive) — `fq_leader.c`
-- **리스 기반 선출**: `control/leader.info`(`<id> <token> <expiry>`)를 폴링, 만료 관측 시
+- **리스 기반 선출**: `control/leader.info`(`<id> <token> <expiry> <instance>`)를 폴링, 만료 관측 시
   `control/election.lock`을 원자적 배타 생성(`fq_fs_create_new`)으로 직렬화한 뒤, **락 안에서
-  leader.info를 다시 읽어 재검증**하고 token을 +1 하여 인수. leader.info 교체는 항상 tmp에 쓰고
-  `fq_fs_rename`으로 원자 교체한다. 삭제 후 생성으로 바꾸면 그 사이에 읽는 노드가 "리더 없음"을 보고
+  leader.info를 다시 읽어 재검증**하고 token = max(leader.info, inflight의 최대 token) + 1로 인수.
+  "내 리스" 판정은 node_id **와** instance(핸들 nonce)로 한다 — node_id만 보면 id가 같은 두 프로세스가
+  서로 빼앗는다. **하트비트(`fq_renew_lease`)도 같은 락 안에서** 읽고-확인하고-쓴다(락 밖에서 쓰면
+  멈췄던 옛 리더가 새 리더를 옛 token으로 덮어써 token이 되돌아간다). 락이 잡혀 있으면 `FQ_ELOCKED`.
+  leader.info 교체는 항상 tmp에 쓰고 `fq_fs_rename`으로 원자 교체한다. 삭제 후 생성으로 바꾸면 그 사이에 읽는 노드가 "리더 없음"을 보고
   살아 있는 리더를 밀어낸다 (`tests/test_election.c`가 이 경합을 검사).
 - **fencing token**: 단조 증가. 모든 inflight에 stamp되며, 복구는 현재 token보다 낮은 것만 회수 →
   멈췄다 깨어난 옛 리더(좀비)가 큐를 건드려도 무해. 복구(`fq_recover_stale`)는 인수 직후뿐 아니라
@@ -108,8 +111,9 @@ fq_fs_posix.c / fq_fs_win32.c   (플랫폼 원자 연산 추상화)
 - 리스 길이는 `fq_lease_ms()` 하나로 읽는다(`FQ_LEASE_MS_OVERRIDE` 반영). 복제하지 말 것.
 - 반환 규약: `FQ_OK`(0) 성공, 음수 오류 코드(`fq.h`). claim 경합 패배는 `FQ_ENOENT`로
   표현되며 정상 흐름이다 — 다음 후보로 넘어가야 한다.
-- 공유 디렉터리(`tmp/`, `control/`)에 만드는 임시 파일 이름에는 반드시 `node_id`를 넣을 것. `fq_gen_id`는
-  pid+salt+카운터+ms 조합이라 노드 간 유일성이 확률적이다. 메시지 이름은 이미 producer를 포함한다.
+- 공유 디렉터리(`tmp/`, `control/`)에 만드는 임시 파일 이름에는 반드시 `node_id`를 넣을 것(`fq_fs_now_ms`도
+  tag 인자로 받는다). `fq_gen_id`는 pid+salt+카운터+ms 조합이라 노드 간 유일성이 확률적이다(카운터는
+  원자적이라 프로세스 안에서는 스레드 간에도 유일). 메시지 이름은 이미 producer를 포함한다.
 - claim 뒤 읽기나 할당이 실패하면 반드시 `incoming/`으로 되돌린다. 내 token이 찍힌 inflight는 복구 대상이
   아니라서 되돌리지 않으면 내가 죽을 때까지 멈춘다.
 - 대상 스토리지가 바뀌면 `test_atomicity`를 그 스토리지에서 먼저 돌려 rename/create/lock 원자성을

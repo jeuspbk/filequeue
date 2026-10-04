@@ -66,7 +66,9 @@ int main(int argc, char **argv)
 
         /* 활성 리더 → 하트비트 갱신 */
         if (now >= next_renew) {
-            if (fq_renew_lease(q, &lease) != FQ_OK) { have_lead = 0; continue; } /* 리더십 상실 */
+            int rrc = fq_renew_lease(q, &lease);
+            if (rrc == FQ_ELOCKED) { sleep_ms(10); continue; }  /* 선출 락이 잠깐 잡힘 → 곧 재시도 */
+            if (rrc != FQ_OK) { have_lead = 0; continue; }       /* 리더십 상실(또는 오류) */
             next_renew = now + renew_iv;
             fq_recover_stale(q, &lease);   /* 좀비가 나중에 claim한 옛 token inflight도 회수 */
         }

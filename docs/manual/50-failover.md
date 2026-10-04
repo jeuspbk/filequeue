@@ -6,7 +6,9 @@ filequeue의 failover는 **리스(lease) 기반 리더 선출 + fencing token + 
 ## 리더 선출과 리스(lease)
 
 한 시점에 활성 소비자는 하나여야 한다. `control/leader.info`가
-`<leader_id> <token> <lease_expiry>` 한 줄로 현재 리더를 기록한다.
+`<leader_id> <token> <lease_expiry> <instance>` 한 줄로 현재 리더를 기록한다. `instance`는 리스를 쓴
+핸들(프로세스)의 nonce라서, node_id가 같은 프로세스가 둘이어도(예: 컨테이너마다 pid가 1) 서로의 유효한
+리스를 빼앗지 않는다.
 
 1. 대기 노드는 `leader.info`를 폴링한다. **리스 만료가 관측되면** 인수를 시도한다.
    폴링은 먼저 추정 FS 시각(30초마다 재측정한 오프셋)으로 비교해, 리스가 유효해 보이면 공유
@@ -15,13 +17,18 @@ filequeue의 failover는 **리스(lease) 기반 리더 선출 + fencing token + 
    성공한 단 하나의 노드만 선출을 진행한다.
 3. 승자는 **락 안에서 `leader.info`를 다시 읽어** 리스가 여전히 만료 상태인지 재확인한다. 락 밖에서
    읽은 값으로 진행하면 차례로 락을 잡은 두 노드가 같은 token을 쓰게 된다.
-4. `token`을 +1 증가시켜 `leader.info`를 tmp에 쓰고 **교체형 원자 rename**으로 바꾸며 새 리스
+4. 새 `token` = max(leader.info의 token, `inflight/`에 남은 최대 token) + 1로 `leader.info`를 tmp에 쓰고 **교체형 원자 rename**으로 바꾸며 새 리스
    만료시각을 쓴다. (삭제 후 생성은 금지: 그 사이에 읽는 노드가 "리더 없음"을 보고 살아 있는 리더를
    밀어낸다.)
 5. `election.lock`을 삭제한다.
 
 활성 리더는 `FQ_HEARTBEAT_MS` 주기로 `fq_renew_lease`를 호출해 만료시각을 연장한다. 리더가
 죽으면 더 이상 갱신되지 않아 리스가 만료되고, 대기 노드가 위 절차로 인수한다.
+
+갱신도 **같은 `election.lock` 안에서** 읽고-확인하고-쓴다. 락 없이 쓰면, leader.info를 읽은 뒤 멈춘
+(fsync 지연, NFS 정지) 옛 리더가 그 사이 인수한 새 리더를 옛 token으로 덮어써 token이 되돌아간다.
+락이 잡혀 있으면 갱신은 `FQ_ELOCKED`를 돌려주며 리더십을 잃은 것은 아니다. `fq_consume`은 짧게
+재시도하고 다음 호출에서 다시 갱신한다.
 
 > 선출 도중 크래시로 `election.lock`이 남으면, `FQ_ELECTION_STALE_MS`보다 오래된 lock은
 > 다음 시도자가 회수한다. 회수는 unlink가 아니라 **고유 이름(`election.lock.stale-*`)으로 rename**한
