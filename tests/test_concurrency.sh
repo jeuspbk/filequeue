@@ -44,8 +44,13 @@ LEFT_FL=$(ls "$ROOT/inflight" 2>/dev/null | grep -c . )
 echo "  발행=$N 고유소비=$U 총소비(중복포함)=$T 활성리더수=$LEADERS 잔여(incoming=$LEFT_IN inflight=$LEFT_FL)"
 [ "$U" -eq "$N" ] && pass "유실 없음 (고유 소비 = 발행 $N)" || fail "유실 발생 (고유 $U != $N)"
 [ "$LEFT_IN" -eq 0 ] && [ "$LEFT_FL" -eq 0 ] && pass "큐 비워짐" || fail "잔여 메시지 존재"
-# 기본 리스(15s)는 4s 안에 만료되지 않으므로 활성 리더는 정확히 1
-[ "$LEADERS" -le 1 ] && pass "Active-Passive (활성 리더 <= 1)" || fail "리더 다중 활성($LEADERS)"
+# Active-Passive = 리더 구간이 겹치지 않음. 먼저 끝난 리더가 종료하며 반납하면 아직 돌고 있는 노드가
+# 이어받을 수 있으므로(정상 인계) "리더였던 노드 수"가 아니라 구간 겹침을 본다.
+OVERLAP=$(grep -h "leader=yes" "$WORK"/a1.err "$WORK"/a2.err "$WORK"/a3.err 2>/dev/null \
+  | sed -E 's/.*lead_from=([0-9]+) lead_to=([0-9]+).*/\1 \2/' | sort -n \
+  | awk 'NR > 1 && $1 < prev_to { n++ } { if ($2 > prev_to) prev_to = $2 } END { print n + 0 }')
+[ "$LEADERS" -ge 1 ] && [ "$OVERLAP" -eq 0 ] && pass "Active-Passive (리더 구간 겹침 없음, 리더였던 노드 $LEADERS)" \
+  || fail "리더 구간 겹침($OVERLAP) 또는 리더 없음($LEADERS)"
 
 echo "== [B] Failover (활성 소비자 강제 종료 후 인수) =="
 ROOT="$WORK/qB"
@@ -95,7 +100,9 @@ if [ -x "$ELECTION" ]; then
   echo "  $(cat "$WORK/cA.out")"
   echo "  $(cat "$WORK/cB.out")"
   [ "$RA" -eq 0 ] && pass "리더 A가 리더십을 한 번도 잃지 않음 (갱신 공백 < 1s)" || fail "리더 A가 리더십을 잃거나 갱신 공백이 김"
-  [ "$RB" -eq 0 ] && pass "대기 노드 B의 탈취 0회" || fail "대기 노드 B가 리더십을 탈취함"
+  if [ "$RB" -eq 0 ]; then pass "대기 노드 B의 탈취 0회"
+  elif ! grep -q "stolen=" "$WORK/cB.out"; then fail "대기 노드 B가 결과 없이 종료(rc=$RB): 실행 실패/크래시"
+  else fail "대기 노드 B가 리더십을 탈취함"; fi
 else
   echo "== [C] 건너뜀: test_election 없음 ($ELECTION) =="
 fi

@@ -44,15 +44,21 @@ struct fq_queue {
     /* fq_consume() 통합 wrapper 상태 */
     int      lead_held;            /* 현재 리더십 보유 여부 */
     fq_lease lead_lease;           /* 보유 중인 리스 */
-    uint64_t lead_next_renew_ms;   /* 다음 하트비트 시각 (벽시계 ms) */
-    uint64_t lead_last_renew_ms;   /* 마지막으로 리스를 성공적으로 썼던 시각 (벽시계 ms).
+    uint64_t lead_next_renew_ms;   /* 다음 하트비트 시각 (단조 시계 ms) */
+    uint64_t lead_last_renew_ms;   /* 마지막으로 리스를 성공적으로 썼던 시각 (단조 시계 ms).
                                       이후 리스 길이만큼 지났으면 FS상 만료됐을 수 있으므로
                                       리더십을 내려놓고 election.lock을 거쳐 다시 얻는다. */
 };
 
 /* ---- 유틸 (fq_util.c) ---- */
 uint64_t fq_now_wall_ms(void);                 /* 벽시계 ms (메시지 정렬용) */
+uint64_t fq_now_mono_ms(void);                 /* 단조 시계 ms (로컬 경과 시간 측정용, 시계 점프 무관) */
 uint64_t fq_lease_ms(void);                    /* 유효 리스(ms). FQ_LEASE_MS_OVERRIDE 존중 */
+uint64_t fq_election_stale_ms(void);           /* election.lock 회수 임계 = min(FQ_ELECTION_STALE_MS, 리스/3) */
+
+/* 교체형 rename으로 갱신되는 파일(leader.info) 읽기. ENOENT면 1ms 간격으로 몇 번 다시 읽는다. */
+#define FQ_REPLACE_READ_RETRIES 5
+int      fq_read_replaced(const char *path, void **out, size_t *out_len);
 /* 파일명에 들어가는 식별자 검증: [A-Za-z0-9._-], 1..max_len자, "__" 금지. 1=유효 */
 int      fq_valid_ident(const char *s, size_t max_len);
 uint32_t fq_pid(void);

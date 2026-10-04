@@ -33,7 +33,11 @@
    큐 내부 전이는 교체형 `rename`(POSIX `rename(2)`, Win32 `MOVEFILE_REPLACE_EXISTING`)만 쓴다.
    대상 이름이 구조상 유일하므로 "덮어쓰지 않음"은 필요 없고, 같은 src를 두 쪽이 rename하면
    정확히 한 쪽만 성공한다는 성질만 필요하다. POSIX에서 fail-if-exists를 흉내 내는 link+unlink는
-   두 단계라 이 성질을 깨므로 내부 전이에 쓰지 않는다
+   두 단계라 이 성질을 깨므로 내부 전이에 쓰지 않는다.
+   **교체형 rename이 동시에 읽는 쪽에도 원자적이라는 보장은 없다**: Cygwin/NTFS에서는 교체 순간 읽기의
+   약 0.4~2%가 ENOENT를 본다(`test_atomicity` [6] 실측). 기존 파일을 교체하는 것은 `leader.info`뿐이며,
+   이를 읽을 때는 `fq_read_replaced`로 ENOENT를 짧게 재시도해 흡수한다. 재시도 후에도 못 읽는 스토리지는
+   쓸 수 없다(`test_atomicity`가 FAIL).
 2. **`O_EXCL` / `CREATE_NEW` 배타 생성은 원자적** ← 리더 선출 mutex
 3. (선택) OS 권고 락(`LockFileEx` / `fcntl`)의 노드 간 신뢰성 ← 있으면 최적화, 없어도 동작
 
@@ -161,7 +165,14 @@ inflight/<이름>.msg[.a<attempt>]__t<token>    # claim 시 리더 token을 stam
      겹치지 않게 하기 위함이다. 삭제→생성 두 단계는 금지: 그 사이에 읽는 노드가 "리더 없음"을 보고
      살아 있는 리더를 밀어낸다
   4. `election.lock` 삭제
-- 선출 도중 크래시 대비: `election.lock`이 임계시간보다 오래되면 강제 정리(stale lock 회수)
+- 선출 도중 크래시 대비: `election.lock`이 임계시간보다 오래되면 강제 정리(stale lock 회수).
+  임계 = min(`FQ_ELECTION_STALE_MS`, 리스/3). 하트비트도 이 락을 쓰므로, 대기 노드가 락을 쥔 채
+  죽었을 때 리더의 리스가 끝나기 전에 회수돼야 한다(30초 고정이면 리더가 15초 뒤 내려놓고 30초까지
+  리더가 없다). 대가: 멈춘 리더가 회수 뒤 늦게 쓰는 창이 "임계 구역에서 약 2/3 리스 이상 멈춤"으로
+  넓어진다. 그 경우에도 token high-water가 token 재발급을 막는다.
+- **정상 종료 시 반납**: `fq_close`(fq_consume의 리더십)와 `fq_release_leadership`(저수준)은 락 안에서
+  내 리스인지 확인한 뒤 만료시각을 0으로 쓴다(token 유지). 반납하지 않으면 대기 노드는 물론, instance가
+  바뀌는 재시작 노드도 리스 만료까지 기다린다.
 
 ### 4-2. Stale inflight 복구 (= 실제 failover 동작)
 
@@ -176,8 +187,8 @@ inflight/<이름>.msg[.a<attempt>]__t<token>    # claim 시 리더 token을 stam
 - GC 정지 · IO 지연 등으로 멈췄던 옛 리더가 리스 만료 후 깨어나 큐를 건드리는 위험.
 - 모든 리더 동작은 자신의 token을 inflight 파일명에 stamp. 복구는 현재(최댓값) token만 신뢰.
 - 리더는 매 배치 전 `leader.info`의 token이 여전히 자신인지 확인 → 아니면 즉시 양보.
-- 리더는 **자기 리스 만료도 스스로 감지**한다: 마지막 성공 갱신 뒤 리스 길이가 지났으면(GC 멈춤, 절전,
-  긴 메시지 처리) FS를 보지 않고도 리더십을 내려놓고 election.lock을 거쳐 다시 얻는다. 다음 하트비트가
+- 리더는 **자기 리스 만료도 스스로 감지**한다: 마지막 성공 갱신 뒤 리스 길이가 **단조 시계로** 지났으면
+  (GC 멈춤, 절전, 긴 메시지 처리. 벽시계 점프에는 반응하지 않는다) FS를 보지 않고도 리더십을 내려놓고 election.lock을 거쳐 다시 얻는다. 다음 하트비트가
   거절당할 때까지 옛 token으로 claim을 계속하는 창을 없애기 위함이다. 처리가 리스보다 길어질 수 있는
   소비자는 `fq_heartbeat`로 중간에 연장한다.
 - `election.lock` stale 회수는 unlink가 아니라 고유 이름으로 rename → 동시에 회수하는 두 노드 중
@@ -247,13 +258,14 @@ int  fq_publish(fq_queue *q, const void *data, size_t len, const char *stream_ke
 /* Consumer: 통합 wrapper (리더십·하트비트·stale 복구 자동) */
 int  fq_consume(fq_queue *q, fq_msg **out);   /* FQ_OK / FQ_EEMPTY / FQ_ELOCKED(대기) */
 int  fq_heartbeat(fq_queue *q);               /* 긴 처리 중 리스 연장 */
-int  fq_ack(fq_queue *q, fq_msg *m);          /* inflight unlink */
+int  fq_ack(fq_queue *q, fq_msg *m);          /* inflight unlink. FQ_ENOENT = 이미 회수됨(재전달 예정) */
 int  fq_nack(fq_queue *q, fq_msg *m);         /* 즉시 requeue (attempt+1, 한도면 dead/) */
 
 /* Consumer: 저수준 (직접 리더십 관리) */
 int  fq_acquire_leadership(fq_queue *q, fq_lease *lease);
 int  fq_renew_lease(fq_queue *q, fq_lease *lease);
 int  fq_recover_stale(fq_queue *q, const fq_lease *lease);
+int  fq_release_leadership(fq_queue *q, const fq_lease *lease);    /* 정상 종료 시 반납 */
 int  fq_claim(fq_queue *q, const fq_lease *lease, fq_msg **out);   /* FQ_EEMPTY = 비었음 */
 ```
 

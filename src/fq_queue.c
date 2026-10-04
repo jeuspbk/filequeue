@@ -12,8 +12,13 @@
 
 static void claim_cache_clear(fq_queue *q);
 
+/* root 상한: 하위 경로("<root>/inflight/<이름>__t<token>.a<N>", 이름 최대 약 270자)가 경로 버퍼(1408)에
+ * 잘리지 않고 들어가야 한다. snprintf가 조용히 잘라 엉뚱한 경로를 쓰는 일을 막는다. */
+#define FQ_ROOT_MAX 900
+
 int fq_open(const char *root, const char *node_id, fq_queue **out)
 {
+    if (!root || !root[0] || !out || strlen(root) > FQ_ROOT_MAX) return FQ_EINVAL;
     fq_queue *q = (fq_queue *)calloc(1, sizeof(*q));
     if (!q) return FQ_ERR;
 
@@ -50,6 +55,7 @@ int fq_open(const char *root, const char *node_id, fq_queue **out)
 void fq_close(fq_queue *q)
 {
     if (!q) return;
+    if (q->lead_held) fq_release_leadership(q, &q->lead_lease);  /* 실패해도 리스 만료로 넘어간다 */
     claim_cache_clear(q);
     free(q);
 }
@@ -395,7 +401,7 @@ int fq_ack(fq_queue *q, fq_msg *m)
     fq_path(path, sizeof(path), q->root, FQ_DIR_INFLIGHT, m->name);
     int rc = fq_fs_unlink(path);
     fq_msg_free(m);
-    return (rc == FQ_OK || rc == FQ_ENOENT) ? FQ_OK : rc;
+    return rc;   /* FQ_ENOENT: 이미 회수됨 → 다시 전달될 수 있음(fq.h) */
 }
 
 int fq_nack(fq_queue *q, fq_msg *m)

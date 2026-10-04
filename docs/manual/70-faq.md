@@ -16,7 +16,9 @@ filequeue는 at-least-once까지를 보장한다.
 ## 새 공유 스토리지를 도입할 때
 
 filequeue는 두 가지 파일시스템 원자성에 의존한다 — 같은 볼륨 내 `rename`의 원자성, 배타
-생성(`O_EXCL`/`CREATE_NEW`)의 원자성. 새 스토리지(특히 NFS/SMB/클러스터 FS)에서는 이 전제가
+생성(`O_EXCL`/`CREATE_NEW`)의 원자성. 교체형 rename이 동시에 읽는 쪽에 원자적이지 않은 FS(교체 순간
+ENOENT가 잠깐 보임, Cygwin/NTFS 실측)도 있는데, 라이브러리가 짧은 재시도로 흡수하며 `test_atomicity`
+[6]이 그 재시도로 충분한지 검사한다. 새 스토리지(특히 NFS/SMB/클러스터 FS)에서는 이 전제가
 성립하는지 **먼저 검증**하라.
 
 ```bash

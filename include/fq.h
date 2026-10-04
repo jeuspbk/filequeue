@@ -23,7 +23,8 @@
 #define FQ_MAX_ATTEMPTS    5      /* 초과 시 DLQ(dead/)로 이동 */
 #define FQ_LEASE_MS        15000  /* 리스 유효시간 */
 #define FQ_HEARTBEAT_MS    3000   /* 리더 하트비트 주기 (LEASE의 1/3~1/5 권장) */
-#define FQ_ELECTION_STALE_MS 30000/* election.lock 강제 회수 임계 */
+#define FQ_ELECTION_STALE_MS 30000/* election.lock 강제 회수 임계의 상한. 실제 = min(이 값, 리스/3):
+                                     하트비트도 이 락을 쓰므로 리스가 끝나기 전에 회수돼야 한다 */
 
 typedef struct fq_queue fq_queue;
 
@@ -47,7 +48,10 @@ typedef struct {
  *          NULL이면 환경변수 FQ_NODE_ID, 그것도 없으면 "<호스트명>-<pid>"로 자동 설정.
  *          node_id가 같은 프로세스가 둘이어도 리더십은 핸들마다 구분된다(leader.info의 instance).
  *          허용 문자: 영문자·숫자·'.'·'-'·'_' (1~63자, "__" 금지). 어기면 FQ_EINVAL.
- *          공백은 leader.info 파싱을, "__"는 inflight 이름의 "__t<token>" 파싱을, '/'는 경로를 깨뜨린다. */
+ *          공백은 leader.info 파싱을, "__"는 inflight 이름의 "__t<token>" 파싱을, '/'는 경로를 깨뜨린다.
+ * root:    NULL·빈 문자열이거나 900자를 넘으면 FQ_EINVAL (하위 경로가 버퍼에서 잘리지 않도록).
+ * fq_close: fq_consume으로 얻은 리더십을 쥐고 있으면 반납한다(대기 노드가 리스 만료를 기다리지 않음).
+ *          저수준 API(fq_acquire_leadership)로 얻은 리스는 fq_release_leadership으로 직접 반납할 것. */
 int  fq_open(const char *root, const char *node_id, fq_queue **out);
 void fq_close(fq_queue *q);
 
@@ -64,8 +68,14 @@ int  fq_acquire_leadership(fq_queue *q, fq_lease *lease);
  *   (리더십은 아직 유지될 수 있음 → 잠시 후 재시도), FQ_ERR 오류. */
 int  fq_renew_lease(fq_queue *q, fq_lease *lease);
 int  fq_recover_stale(fq_queue *q, const fq_lease *lease);    /* 선임자 inflight 회수 */
+/* 리더십 반납: 아직 내 리스면 만료시각을 0으로 써서 대기 노드가 곧바로 인수하게 한다(token 유지).
+ * FQ_OK 반납됨, FQ_ENOLEADER 이미 내 리스가 아님, FQ_ELOCKED 선출 진행 중(재시도), FQ_ERR 오류. */
+int  fq_release_leadership(fq_queue *q, const fq_lease *lease);
 int  fq_claim(fq_queue *q, const fq_lease *lease, fq_msg **out); /* FQ_EEMPTY 가능 */
-int  fq_ack(fq_queue *q, fq_msg *m);    /* inflight unlink (처리 완료) */
+/* fq_ack: inflight unlink (처리 완료). m은 항상 해제된다.
+ *   FQ_ENOENT = 파일이 이미 없음: 리스를 놓쳐 그 사이 회수됐다면 이 메시지는 다시 전달된다
+ *   (중복 처리 신호. 소비자가 멱등이면 무해). */
+int  fq_ack(fq_queue *q, fq_msg *m);
 int  fq_nack(fq_queue *q, fq_msg *m);   /* 즉시 requeue (attempt+1) */
 void fq_msg_free(fq_msg *m);
 

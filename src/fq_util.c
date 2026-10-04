@@ -1,5 +1,6 @@
 /* fq_util.c - 플랫폼 독립 유틸 */
 #include "fq_internal.h"
+#include "fq_fs.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -28,6 +29,17 @@ uint64_t fq_now_wall_ms(void)
 #endif
 }
 
+uint64_t fq_now_mono_ms(void)
+{
+#if defined(_WIN32) && !defined(__CYGWIN__)
+    return (uint64_t)GetTickCount64();
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000ULL + (uint64_t)ts.tv_nsec / 1000000ULL;
+#endif
+}
+
 uint64_t fq_lease_ms(void)
 {
     /* 테스트에서 FQ_LEASE_MS_OVERRIDE로 단축 가능 */
@@ -37,6 +49,27 @@ uint64_t fq_lease_ms(void)
         if (v > 0) return (uint64_t)v;
     }
     return FQ_LEASE_MS;
+}
+
+uint64_t fq_election_stale_ms(void)
+{
+    /* 하트비트도 election.lock이 필요하므로, 락을 쥔 채 죽은 노드가 남긴 락은 리더의 리스가 끝나기
+     * 전에 회수돼야 한다(아니면 리더가 갱신을 못 해 내려놓고, 회수 시점까지 아무도 리더가 아니다).
+     * 리스의 1/3이면 하트비트 주기 안에 회수된다. 임계 구역은 ms 단위라 정상 보유자를 회수하지 않는다. */
+    uint64_t v = fq_lease_ms() / 3;
+    return v < FQ_ELECTION_STALE_MS ? v : FQ_ELECTION_STALE_MS;
+}
+
+int fq_read_replaced(const char *path, void **out, size_t *out_len)
+{
+    /* 일부 플랫폼(Cygwin/NTFS 실측 약 0.4%)에서는 교체형 rename 순간 읽는 쪽이 ENOENT를 본다.
+     * 원래 있던 파일이 교체 중일 뿐이므로 잠깐 기다려 다시 읽는다. 정말 없을 때만 ENOENT. */
+    int rc = fq_fs_read_file(path, out, out_len);
+    for (int i = 0; rc == FQ_ENOENT && i < FQ_REPLACE_READ_RETRIES; i++) {
+        fq_sleep_ms(1);
+        rc = fq_fs_read_file(path, out, out_len);
+    }
+    return rc;
 }
 
 int fq_valid_ident(const char *s, size_t max_len)

@@ -42,7 +42,7 @@ static int heartbeat_now(fq_queue *q, uint64_t now)
 /* 리더십 획득·갱신. FQ_OK면 claim해도 된다. */
 static int lead(fq_queue *q)
 {
-    uint64_t now = fq_now_wall_ms();
+    uint64_t now = fq_now_mono_ms();   /* 로컬 경과 시간: 벽시계 점프에 흔들리지 않게 단조 시계 */
 
     if (q->lead_held) {
         /* 리스 자체 만료 감지: 마지막 성공 갱신 뒤 리스 길이가 지났다면(GC 멈춤, 절전, 긴 처리)
@@ -51,9 +51,6 @@ static int lead(fq_queue *q)
          * 아무도 인수하지 않았다면 그대로 되찾는다(token만 +1). */
         if (now >= q->lead_last_renew_ms + fq_lease_ms())
             q->lead_held = 0;
-        /* 벽시계가 뒤로 점프해 다음 갱신 시각이 멀어진 경우도 즉시 갱신 */
-        else if (now + renew_interval_ms() < q->lead_next_renew_ms)
-            q->lead_next_renew_ms = now;
     }
 
     if (!q->lead_held) {
@@ -77,7 +74,7 @@ static int lead(fq_queue *q)
 int fq_heartbeat(fq_queue *q)
 {
     if (!q->lead_held) return FQ_ELOCKED;
-    int rc = heartbeat_now(q, fq_now_wall_ms());
+    int rc = heartbeat_now(q, fq_now_mono_ms());
     return rc == FQ_EEXIST ? FQ_ERR : rc;    /* 일시적: 리더십은 유지, 다시 호출하면 된다 */
 }
 

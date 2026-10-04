@@ -5,12 +5,15 @@
  *   1) atomic rename (교체형 fq_fs_rename / 대상 존재 시 실패하는 noreplace)
  *   2) atomic exclusive create (CREATE_NEW / O_EXCL)
  *   3) advisory lock (선택적)
+ * 그리고 교체형 rename 중 동시 읽기([6]): 교체가 읽는 쪽에 원자적이지 않은 FS도 있어(ENOENT가 잠깐
+ * 보임) 라이브러리는 재시도로 흡수한다. 재시도 후에도 못 읽으면 그 스토리지는 쓸 수 없다.
  *
  * 사용:  test_atomicity [작업디렉터리]
  * 종료코드 0 = 모든 검사 통과.
  */
 #include "fq_fs.h"
 #include "fq.h"
+#include "fq_internal.h"   /* fq_read_replaced, fq_now_mono_ms */
 
 #include <stdio.h>
 #include <string.h>
@@ -23,6 +26,43 @@ static int fails = 0;
 } while (0)
 
 static int count_cb(const char *name, void *ud) { (void)name; (*(int *)ud)++; return 0; }
+
+/* [6]용: 한 스레드는 대상 파일을 tmp+rename으로 계속 교체하고, 메인 스레드는 계속 읽는다 */
+typedef struct {
+    char          dir[1024], target[1100];
+    volatile int  stop;
+    long          replaces;
+} replace_ctx;
+
+#if defined(_WIN32) && !defined(__CYGWIN__)
+#  include <windows.h>
+typedef HANDLE thread_t;
+typedef DWORD thread_ret;
+#  define THREAD_CALL WINAPI
+static int thread_start(thread_t *t, thread_ret (THREAD_CALL *fn)(void *), void *arg)
+{ *t = CreateThread(NULL, 0, fn, arg, 0, NULL); return *t ? 0 : -1; }
+static void thread_join(thread_t t) { WaitForSingleObject(t, INFINITE); CloseHandle(t); }
+#else
+#  include <pthread.h>
+typedef pthread_t thread_t;
+typedef void *thread_ret;
+#  define THREAD_CALL
+static int thread_start(thread_t *t, thread_ret (*fn)(void *), void *arg)
+{ return pthread_create(t, NULL, fn, arg); }
+static void thread_join(thread_t t) { pthread_join(t, NULL); }
+#endif
+
+static thread_ret THREAD_CALL replace_writer(void *arg)
+{
+    replace_ctx *c = (replace_ctx *)arg;
+    char tmp[1100];
+    snprintf(tmp, sizeof(tmp), "%s/replaced.tmp", c->dir);
+    while (!c->stop) {
+        if (fq_fs_write_sync(tmp, "v", 1) == FQ_OK && fq_fs_rename(tmp, c->target) == FQ_OK)
+            c->replaces++;
+    }
+    return 0;
+}
 
 int main(int argc, char **argv)
 {
@@ -97,6 +137,38 @@ int main(int argc, char **argv)
         int n = 0;
         CHECK(fq_fs_list(dir, count_cb, &n) == FQ_OK && n >= 1, "항목 1개 이상");
         fq_fs_unlink(f);
+    }
+
+    /* 6) 교체 중 읽기: leader.info는 교체형 rename으로 갱신되고 다른 노드가 동시에 읽는다.
+     *    일부 FS(Cygwin/NTFS 실측)는 교체 순간 읽는 쪽에 ENOENT를 보인다. 라이브러리는 이를
+     *    fq_read_replaced의 짧은 재시도로 흡수하므로, 재시도 후에도 못 읽는 경우가 0이어야 한다. */
+    printf("[6] 교체형 rename 중 동시 읽기\n");
+    {
+        replace_ctx c;
+        memset(&c, 0, sizeof(c));
+        snprintf(c.dir, sizeof(c.dir), "%s", dir);
+        snprintf(c.target, sizeof(c.target), "%s/replaced", dir);
+        fq_fs_write_sync(c.target, "v", 1);
+        thread_t th;
+        CHECK(thread_start(&th, replace_writer, &c) == 0, "교체 스레드 시작");
+        long reads = 0, raw_enoent = 0, misses = 0;
+        uint64_t end = fq_now_mono_ms() + 1500;
+        while (fq_now_mono_ms() < end) {
+            void *buf = NULL; size_t len = 0;
+            reads++;
+            if (fq_fs_read_file(c.target, &buf, &len) == FQ_ENOENT) raw_enoent++;
+            else free(buf);
+            buf = NULL;
+            if (fq_read_replaced(c.target, &buf, &len) != FQ_OK) misses++;
+            else free(buf);
+        }
+        c.stop = 1;
+        thread_join(th);
+        printf("  [INFO] 읽기 %ld회, 교체 %ld회, 재시도 없이 ENOENT %ld회%s\n", reads, c.replaces,
+               raw_enoent, raw_enoent ? " (이 FS는 교체가 읽는 쪽에 원자적이지 않음)" : "");
+        CHECK(c.replaces > 0, "교체가 실제로 일어남");
+        CHECK(misses == 0, "재시도 읽기(fq_read_replaced)는 항상 성공");
+        fq_fs_unlink(c.target);
     }
 
     printf("\n== 결과: %s (%d 실패) ==\n", fails ? "FAIL" : "PASS", fails);

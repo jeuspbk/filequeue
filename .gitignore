@@ -4,8 +4,9 @@
 *.a
 *.lib
 *.exe
-_atom_test/
-_basic_test/
+# 테스트 기본 작업 디렉터리 (_atom_test, _basic_test, _basic_test-lead, _consume_test, ...)
+_*_test/
+_*_test-*/
 
 # 생성된 매뉴얼 (docs/build_manual.sh 로 재생성)
 docs/manual.html

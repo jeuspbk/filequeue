@@ -34,7 +34,7 @@ static int read_leader_info(fq_queue *q, leader_info *li)
     fq_path(path, sizeof(path), q->root, FQ_DIR_CONTROL, "leader.info");
 
     void *buf = NULL; size_t len = 0;
-    int rc = fq_fs_read_file(path, &buf, &len);
+    int rc = fq_read_replaced(path, &buf, &len);   /* 교체 순간의 ENOENT를 "리더 없음"으로 오인 방지 */
     if (rc == FQ_ENOENT) return FQ_OK;
     if (rc != FQ_OK) return rc;
 
@@ -96,7 +96,7 @@ static int election_lock(fq_queue *q, uint64_t now, char *lock_path, size_t n)
     if (rc == FQ_EEXIST) {
         uint64_t lock_mtime = 0;
         if (fq_fs_mtime_ms(lock_path, &lock_mtime) == FQ_OK &&
-            now > lock_mtime + FQ_ELECTION_STALE_MS) {
+            now > lock_mtime + fq_election_stale_ms()) {
             char gid[64], stale[1408];
             fq_gen_id(gid, sizeof(gid));
             snprintf(stale, sizeof(stale), "%s.stale-%s-%s", lock_path, q->node_id, gid);
@@ -222,6 +222,30 @@ int fq_renew_lease(fq_queue *q, fq_lease *lease)
 
     lease->lease_expiry_ms = expiry;
     return FQ_OK;
+}
+
+int fq_release_leadership(fq_queue *q, const fq_lease *lease)
+{
+    char ctrl[1280];
+    fq_path(ctrl, sizeof(ctrl), q->root, FQ_DIR_CONTROL, NULL);
+
+    uint64_t now = 0;
+    if (fq_fs_now_ms(ctrl, q->node_id, &now) != FQ_OK) return FQ_ERR;
+
+    char lock_path[1280];
+    int rc = election_lock(q, now, lock_path, sizeof(lock_path));
+    if (rc != FQ_OK) return rc;
+
+    leader_info cur;
+    if (read_leader_info(q, &cur) != FQ_OK) { fq_fs_unlink(lock_path); return FQ_ERR; }
+    if (cur.token != lease->token || !is_mine(q, &cur)) {
+        fq_fs_unlink(lock_path);
+        return FQ_ENOLEADER;                     /* 이미 다른 리더: 건드리지 않는다 */
+    }
+    /* token은 그대로 두고 만료시각만 0으로: 다음 인수자는 대기 없이 token+1로 이어받는다 */
+    int wrc = write_leader_info(q, lease->token, 0);
+    fq_fs_unlink(lock_path);
+    return wrc == FQ_OK ? FQ_OK : FQ_ERR;
 }
 
 /* stale inflight 회수용 컨텍스트 */

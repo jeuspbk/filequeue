@@ -30,8 +30,10 @@ target_include_directories(filequeue PUBLIC include)
 
 enable_testing()
 
+find_package(Threads REQUIRED)   # test_atomicity [6] 교체 중 동시 읽기
+
 add_executable(test_atomicity tests/test_atomicity.c)
-target_link_libraries(test_atomicity filequeue)
+target_link_libraries(test_atomicity filequeue Threads::Threads)
 add_test(NAME atomicity COMMAND test_atomicity)
 
 add_executable(test_basic tests/test_basic.c)

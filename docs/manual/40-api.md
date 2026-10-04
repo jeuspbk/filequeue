@@ -28,7 +28,7 @@ API의 **정본은 `include/fq.h`의 선언과 주석**이다. 이 절은 표 �
 | `FQ_MAX_ATTEMPTS` | 5 | 재시도 한도. 초과 시 `dead/`로 이동 |
 | `FQ_LEASE_MS` | 15000 | 리스 유효시간(ms) |
 | `FQ_HEARTBEAT_MS` | 3000 | 리더 하트비트 주기(ms). 리스의 1/3~1/5 권장 |
-| `FQ_ELECTION_STALE_MS` | 30000 | `election.lock` 강제 회수 임계(ms) |
+| `FQ_ELECTION_STALE_MS` | 30000 | `election.lock` 강제 회수 임계의 상한(ms). 실제 임계 = min(이 값, 리스/3) |
 
 ## 데이터 구조
 
@@ -60,8 +60,8 @@ typedef struct {
 
 | 함수 | 시그니처 | 설명 |
 |---|---|---|
-| `fq_open` | `int fq_open(const char *root, const char *node_id, fq_queue **out)` | 큐를 열고 하위 디렉터리를 생성. `node_id`는 이 노드의 식별자(메시지 파일명·리더십 id 겸용). `NULL`이면 `FQ_NODE_ID` 환경변수 → `<호스트명>-<pid>` 순으로 폴백. 형식이 어긋나면 `FQ_EINVAL`. |
-| `fq_close` | `void fq_close(fq_queue *q)` | 큐 핸들 해제. |
+| `fq_open` | `int fq_open(const char *root, const char *node_id, fq_queue **out)` | 큐를 열고 하위 디렉터리를 생성. `node_id`는 이 노드의 식별자(메시지 파일명·리더십 id 겸용). `NULL`이면 `FQ_NODE_ID` 환경변수 → `<호스트명>-<pid>` 순으로 폴백. 형식이 어긋나거나 `root`가 NULL·900자 초과면 `FQ_EINVAL`. |
+| `fq_close` | `void fq_close(fq_queue *q)` | 큐 핸들 해제. `fq_consume`으로 얻은 리더십을 쥐고 있으면 반납한다(저수준 API로 얻은 리스는 `fq_release_leadership`으로 직접). |
 
 ## 생산자 함수
 
@@ -77,7 +77,8 @@ typedef struct {
 | `fq_renew_lease` | `int fq_renew_lease(fq_queue *q, fq_lease *lease)` | 하트비트. `election.lock` 안에서 여전히 내가 리더인지 확인하고 만료시각 연장. 아니면 `FQ_ENOLEADER`. 선출이 진행 중이라 락이 잡혀 있으면 `FQ_ELOCKED`(리더십은 유지될 수 있음 → 잠시 후 재시도). |
 | `fq_recover_stale` | `int fq_recover_stale(fq_queue *q, const fq_lease *lease)` | 옛 token의 inflight(죽은 선임자·좀비 것)를 `incoming/`으로 회수(attempt+1, 한도 초과 시 `dead/`). 인수 직후와 **매 하트비트마다** 호출. |
 | `fq_claim` | `int fq_claim(fq_queue *q, const fq_lease *lease, fq_msg **out)` | 가장 오래된 메시지를 점유. 비었으면 `FQ_EEMPTY`. |
-| `fq_ack` | `int fq_ack(fq_queue *q, fq_msg *m)` | 처리 완료. inflight 삭제 + `m` 해제. |
+| `fq_ack` | `int fq_ack(fq_queue *q, fq_msg *m)` | 처리 완료. inflight 삭제 + `m` 해제. `FQ_ENOENT` = 파일이 이미 없음(리스를 놓친 사이 회수됨 → 이 메시지는 다시 전달된다. 멱등 소비자면 무해). |
+| `fq_release_leadership` | `int fq_release_leadership(fq_queue *q, const fq_lease *lease)` | 정상 종료 시 리더십 반납. 아직 내 리스면 만료시각을 0으로 써서 대기 노드가 곧바로 인수한다. `FQ_ENOLEADER` 이미 내 리스 아님, `FQ_ELOCKED` 선출 중(재시도). |
 | `fq_nack` | `int fq_nack(fq_queue *q, fq_msg *m)` | 즉시 재큐잉(attempt+1). 한도 초과 시 `dead/`. `m` 해제. |
 | `fq_msg_free` | `void fq_msg_free(fq_msg *m)` | ack/nack 없이 메시지 폐기(버퍼 해제). |
 

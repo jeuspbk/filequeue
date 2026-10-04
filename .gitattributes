@@ -1,0 +1,2 @@
+# 셸 스크립트는 체크아웃 시에도 LF 유지 (core.autocrlf=true에서 CRLF가 되면 Cygwin bash가 $'\r' 오류)
+*.sh text eol=lf

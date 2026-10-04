@@ -30,10 +30,18 @@ filequeue의 failover는 **리스(lease) 기반 리더 선출 + fencing token + 
 락이 잡혀 있으면 갱신은 `FQ_ELOCKED`를 돌려주며 리더십을 잃은 것은 아니다. `fq_consume`은 짧게
 재시도하고 다음 호출에서 다시 갱신한다.
 
-> 선출 도중 크래시로 `election.lock`이 남으면, `FQ_ELECTION_STALE_MS`보다 오래된 lock은
-> 다음 시도자가 회수한다. 회수는 unlink가 아니라 **고유 이름(`election.lock.stale-*`)으로 rename**한
+> 선출 도중 크래시로 `election.lock`이 남으면, min(`FQ_ELECTION_STALE_MS`, 리스/3)보다 오래된 lock은
+> 다음 시도자가 회수한다. 하트비트도 이 락을 쓰므로 회수 임계는 리스보다 짧아야 한다(그렇지 않으면
+> 락을 쥔 채 죽은 대기 노드 때문에 살아 있는 리더까지 갱신을 못 해 내려놓는다). 회수는 unlink가 아니라 **고유 이름(`election.lock.stale-*`)으로 rename**한
 > 뒤 새로 만드는 방식이라, 동시에 회수하는 두 노드 중 rename에 성공한 하나만 진행한다(unlink였다면
 > 서로의 새 락을 지워 둘 다 임계 구역에 들어갈 수 있다). 데드락도 split-brain도 생기지 않는다.
+
+## 정상 종료와 반납
+
+`fq_close`는 `fq_consume`으로 얻은 리더십을 반납한다(만료시각 0, token 유지). 저수준 API를 쓴다면
+종료 전에 `fq_release_leadership(q, &lease)`를 호출한다. 반납하지 않으면 대기 노드는 리스 만료(기본
+15초)까지 기다리고, 재시작한 같은 노드도 프로세스가 바뀌었으므로(instance) 마찬가지로 기다린다.
+`kill -9`·크래시처럼 반납하지 못한 경우에만 리스 만료를 기다리는 것이 정상이다.
 
 ## Fencing token (좀비 리더 방어)
 

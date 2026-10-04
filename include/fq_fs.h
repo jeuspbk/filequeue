@@ -41,7 +41,9 @@ int  fq_fs_exists(const char *path);     /* 1=있음, 0=없음, <0=오류 */
 /* 파일 전체를 malloc 버퍼로 읽음 (호출자가 free). */
 int  fq_fs_read_file(const char *path, void **out, size_t *out_len);
 
-/* 디렉터리 메타데이터 영속화. 미지원 플랫폼에서는 no-op. */
+/* 디렉터리 메타데이터 영속화. 미지원 플랫폼에서는 no-op.
+ * POSIX 구현은 fsync 실패도 FQ_OK로 돌려준다(dir fsync를 지원하지 않는 FS가 있어서). 즉 발행의
+ * "디렉터리까지 영속" 보장은 FS가 dir fsync를 지원할 때만 성립하며, 실패해도 호출자는 알 수 없다. */
 int  fq_fs_fsync_dir(const char *path);
 
 /* 디렉터리 나열. '.' '..' 제외. 반환: 끝까지 돌면 FQ_OK, cb가 0이 아닌 값을 반환하면 즉시 중단하고

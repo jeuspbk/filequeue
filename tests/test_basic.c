@@ -193,9 +193,48 @@ int main(int argc, char **argv)
         CHECK(fq_renew_lease(d1, &l1) == FQ_ENOLEADER, "옛 핸들의 갱신은 ENOLEADER");
 
         fq_fs_unlink(inf);
+
+        /* 리더십 반납: 대기 노드(같은 node_id의 다른 핸들)가 리스 만료를 기다리지 않고 바로 인수 */
+        CHECK(fq_release_leadership(d2, &l2) == FQ_OK, "리더십 반납");
+        CHECK(fq_acquire_leadership(d1, &l1) == FQ_OK && l1.token == 12, "반납 직후 다른 핸들이 인수 (token +1)");
+        CHECK(fq_release_leadership(d2, &l2) == FQ_ENOLEADER, "이미 넘긴 리스는 반납 불가(ENOLEADER)");
+        CHECK(fq_release_leadership(d1, &l1) == FQ_OK, "핸들1 반납");
+
+        /* fq_close: fq_consume으로 얻은 리더십은 닫을 때 자동 반납 */
+        fq_queue *d3 = NULL, *d4 = NULL;
+        fq_msg *m = NULL;
+        CHECK(fq_open(lr, "dup", &d3) == FQ_OK && fq_consume(d3, &m) == FQ_EEMPTY,
+              "fq_consume으로 리더가 됨(빈 큐)");
+        fq_close(d3);
+        CHECK(fq_open(lr, "dup", &d4) == FQ_OK && fq_consume(d4, &m) == FQ_EEMPTY,
+              "fq_close가 반납해 새 핸들이 곧바로 리더 (ELOCKED 아님)");
+
+        /* fq_ack: 리스를 놓친 사이 회수된 메시지의 ack는 ENOENT (중복 전달 신호) */
+        CHECK(fq_publish(d4, "r", 1, NULL) == FQ_OK && fq_consume(d4, &m) == FQ_OK, "메시지 claim");
+        if (m) {
+            fq_lease newer = d4->lead_lease;
+            newer.token++;                                  /* 더 새 리더가 회수한 상황 흉내 */
+            fq_recover_stale(d4, &newer);
+            CHECK(fq_ack(d4, m) == FQ_ENOENT, "회수된 메시지의 ack는 FQ_ENOENT");
+            fq_msg *again = NULL;
+            CHECK(fq_claim(d4, &newer, &again) == FQ_OK, "회수된 메시지가 다시 전달됨");
+            if (again) fq_ack(d4, again);
+        }
+        fq_close(d4);
         fq_fs_write_sync(li, "none 0 0\n", 9);
         fq_close(d1);
         fq_close(d2);
+    }
+
+    /* [10] fq_open 인자 검증: root NULL·과도한 길이는 EINVAL (경로가 조용히 잘리지 않게) */
+    printf("[10] fq_open 인자 검증\n");
+    {
+        fq_queue *bad = NULL;
+        char longroot[1000];
+        memset(longroot, 'r', sizeof(longroot) - 1);
+        longroot[sizeof(longroot) - 1] = '\0';
+        CHECK(fq_open(NULL, "n", &bad) == FQ_EINVAL, "root NULL 거부");
+        CHECK(fq_open(longroot, "n", &bad) == FQ_EINVAL, "900자 초과 root 거부");
     }
 
     /* [8] 경로 접두부: 드라이브·UNC는 mkdirs가 만들지 않는다 */

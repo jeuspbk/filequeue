@@ -86,13 +86,17 @@ fq_fs_posix.c / fq_fs_win32.c   (플랫폼 원자 연산 추상화)
   "내 리스" 판정은 node_id **와** instance(핸들 nonce)로 한다 — node_id만 보면 id가 같은 두 프로세스가
   서로 빼앗는다. **하트비트(`fq_renew_lease`)도 같은 락 안에서** 읽고-확인하고-쓴다(락 밖에서 쓰면
   멈췄던 옛 리더가 새 리더를 옛 token으로 덮어써 token이 되돌아간다). 락이 잡혀 있으면 `FQ_ELOCKED`.
-  leader.info 교체는 항상 tmp에 쓰고 `fq_fs_rename`으로 원자 교체한다. 삭제 후 생성으로 바꾸면 그 사이에 읽는 노드가 "리더 없음"을 보고
-  살아 있는 리더를 밀어낸다 (`tests/test_election.c`가 이 경합을 검사).
+  그래서 stale 락 회수 임계는 `fq_election_stale_ms()`(= min(30초, 리스/3))로 읽는다 — 리스보다 길면
+  락을 쥔 채 죽은 노드가 리더까지 멈춘다. 정상 종료는 `fq_close`/`fq_release_leadership`으로 반납.
+  leader.info 교체는 항상 tmp에 쓰고 `fq_fs_rename`으로 원자 교체한다. 삭제 후 생성으로 바꾸면 그
+  사이에 읽는 노드가 "리더 없음"을 보고 살아 있는 리더를 밀어낸다 (`tests/test_election.c`가 이 경합을 검사).
+- **leader.info 읽기는 `fq_read_replaced`**: 교체형 rename이 읽는 쪽에 원자적이지 않은 FS(Cygwin/NTFS
+  실측)가 있어 ENOENT를 짧게 재시도한다. 그냥 `fq_fs_read_file`로 읽으면 "리더 없음"으로 오인한다.
 - **fencing token**: 단조 증가. 모든 inflight에 stamp되며, 복구는 현재 token보다 낮은 것만 회수 →
   멈췄다 깨어난 옛 리더(좀비)가 큐를 건드려도 무해. 복구(`fq_recover_stale`)는 인수 직후뿐 아니라
   **하트비트마다** 돈다(좀비가 나중에 claim한 inflight도 다음 failover를 기다리지 않음).
-- **리스 자체 만료 감지**: `fq_consume`의 리더는 마지막 성공 갱신 뒤 리스 길이가 지나면(GC 멈춤, 절전,
-  긴 처리) 스스로 내려놓고 election.lock을 거쳐 다시 얻는다. 메시지 하나 처리가 리스보다 길 수 있으면
+- **리스 자체 만료 감지**: `fq_consume`의 리더는 마지막 성공 갱신 뒤 리스 길이가 지나면(단조 시계
+  `fq_now_mono_ms`로 잰다. GC 멈춤, 절전, 긴 처리) 스스로 내려놓고 election.lock을 거쳐 다시 얻는다. 메시지 하나 처리가 리스보다 길 수 있으면
   처리 중 `fq_heartbeat(q)`를 호출할 것.
 - **election.lock stale 회수**는 unlink가 아니라 고유 이름으로 rename한 뒤 새로 만든다. unlink면
   동시에 회수하는 두 노드가 서로의 새 락을 지워 둘 다 임계 구역에 들어간다.

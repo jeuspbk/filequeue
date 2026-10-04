@@ -50,6 +50,7 @@ int main(int argc, char **argv)
     uint64_t next_renew = 0;
     long     processed  = 0;
     int      became_leader = 0;
+    uint64_t lead_from  = 0;   /* 처음 리더가 된 시각 (테스트의 리더 구간 겹침 검사용) */
 
     for (;;) {
         uint64_t now = fq_now_wall_ms();
@@ -59,7 +60,8 @@ int main(int argc, char **argv)
         if (!have_lead) {
             int rc = fq_acquire_leadership(q, &lease);
             if (rc != FQ_OK) { sleep_ms(30); continue; }  /* 아직 다른 리더 활성 */
-            have_lead = 1; became_leader = 1;
+            have_lead = 1;
+            if (!became_leader) { became_leader = 1; lead_from = fq_now_wall_ms(); }
             next_renew = now + renew_iv;
             fq_recover_stale(q, &lease);   /* 선임자가 남긴 inflight 회수 */
         }
@@ -85,8 +87,12 @@ int main(int argc, char **argv)
     }
 
     fclose(log);
+    /* 리더 구간 끝 = 반납 직전. 반납 뒤에야 다른 노드가 인수하므로 정상이면 구간이 겹치지 않는다. */
+    uint64_t lead_to = fq_now_wall_ms();
+    if (have_lead) fq_release_leadership(q, &lease);   /* 대기 노드가 리스 만료를 기다리지 않게 */
     fq_close(q);
-    fprintf(stderr, "[%s] leader=%s processed=%ld\n",
-            node_id, became_leader ? "yes" : "no", processed);
+    fprintf(stderr, "[%s] leader=%s processed=%ld lead_from=%llu lead_to=%llu\n",
+            node_id, became_leader ? "yes" : "no", processed,
+            (unsigned long long)lead_from, (unsigned long long)lead_to);
     return 0;
 }
