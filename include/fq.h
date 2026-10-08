@@ -29,7 +29,8 @@
 /* 튜닝 노브 */
 #define FQ_MAX_ATTEMPTS    5      /* 초과 시 DLQ(dead/)로 이동 */
 #define FQ_LEASE_MS        15000  /* 리스 유효시간 */
-#define FQ_HEARTBEAT_MS    3000   /* 리더 하트비트 주기 (LEASE의 1/3~1/5 권장) */
+#define FQ_HEARTBEAT_MS    3000   /* 저수준 API(fq_renew_lease) 사용자의 권장 갱신 주기 (LEASE의 1/3~1/5).
+                                     fq_consume은 이 값을 쓰지 않고 리스/3으로 갱신한다(FQ_LEASE_MS_OVERRIDE 반영) */
 #define FQ_ELECTION_STALE_MS 30000/* election.lock 강제 회수 임계의 상한. 실제 = min(이 값, 리스/3):
                                      하트비트도 이 락을 쓰므로 리스가 끝나기 전에 회수돼야 한다 */
 

@@ -37,6 +37,9 @@ int  fq_fs_rename_noreplace(const char *src, const char *dst);
 
 /* 빈 파일을 원자적·배타적으로 생성. 이미 있으면 FQ_EEXIST. */
 int  fq_fs_create_new(const char *path);
+/* fq_fs_create_new와 같되 만든 파일에 data를 쓰고 닫는다(election.lock의 보유자 표시).
+ * 배타성은 생성에서 결정된다. 쓰기가 실패하면 만든 파일을 지우고 FQ_ERR. */
+int  fq_fs_create_new_data(const char *path, const void *data, size_t len);
 
 int  fq_fs_unlink(const char *path);     /* 없으면 FQ_ENOENT */
 int  fq_fs_exists(const char *path);     /* 1=있음, 0=없음, <0=오류 */

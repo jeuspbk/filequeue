@@ -118,6 +118,24 @@ int fq_fs_create_new(const char *path)
     return FQ_OK;
 }
 
+int fq_fs_create_new_data(const char *path, const void *data, size_t len)
+{
+    int fd = open(path, O_WRONLY | O_CREAT | O_EXCL, 0644);
+    if (fd < 0) return errno == EEXIST ? FQ_EEXIST : FQ_ERR;
+    const char *p = (const char *)data;
+    while (len > 0) {
+        ssize_t w = write(fd, p, len);
+        if (w < 0) {
+            if (errno == EINTR) continue;
+            close(fd); unlink(path); return FQ_ERR;
+        }
+        p += w;
+        len -= (size_t)w;
+    }
+    if (close(fd) != 0) { unlink(path); return FQ_ERR; }
+    return FQ_OK;
+}
+
 int fq_fs_unlink(const char *path)
 {
     if (unlink(path) != 0)

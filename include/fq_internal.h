@@ -87,6 +87,16 @@ void fq_parse_attempt(const char *name, char *base_out, size_t base_n, uint32_t 
 /* inflight 이름 "<logical>__t<token>" 에서 token을 파싱. 실패 시 0 반환, logical_out 채움. */
 uint64_t fq_parse_inflight(const char *name, char *logical_out, size_t logical_n);
 
+/* ---- election.lock (fq_leader.c) ----
+ * 보유자 표시를 쓴 배타 락. 해제는 표시가 내 것일 때만 지운다(멈췄던 보유자가 회수 뒤 남의 락을 지우지 않게).
+ * FQ_OK = 획득, FQ_ELOCKED = 다른 쪽이 보유, FQ_ERR = 오류. now = FS 시각(stale 판정). */
+typedef struct {
+    char path[1280];
+    char owner[192];   /* "<node_id> <instance> <획득 id>\n" */
+} fq_elock;
+int      fq_election_lock(fq_queue *q, uint64_t now, fq_elock *lk);
+void     fq_election_unlock(const fq_elock *lk);
+
 /* ---- 리스 인수 (fq_leader.c) ----
  * fq_acquire_leadership과 같되 election.lock이 잡혀 있으면 FQ_EEXIST(남의 유효한 리스는 FQ_ELOCKED).
  * same_node면 같은 node_id의 다른 instance가 쓴 리스도 만료를 기다리지 않고 인수한다(fq_takeover). */

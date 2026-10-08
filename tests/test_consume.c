@@ -136,6 +136,54 @@ int main(int argc, char **argv)
         if (qa2) fq_close(qa2);
     }
 
+    printf("[7] 리스 자체 만료 뒤 재획득해도 처리 중인 메시지는 회수하지 않음\n");
+    {
+        fq_queue *qs = NULL;
+        CHECK(fq_open(root, "nodeS", &qs) == FQ_OK && qs, "새 노드 핸들");
+        if (qs) {
+            fq_takeover(qs);                     /* 앞 단계의 리더가 남긴 리스와 무관하게 시작 */
+            CHECK(fq_publish(qs, "P", 1, NULL) == FQ_OK, "publish");
+            fq_msg *p = NULL, *n = NULL;
+            int rc = fq_consume(qs, &p);
+            CHECK(rc == FQ_OK && p, "claim (처리 중)");
+            uint64_t tok = qs->lead_lease.token;
+            qs->lead_last_renew_ms = 0;          /* 처리가 리스보다 길어짐 → 다음 consume이 재획득 */
+            rc = fq_consume(qs, &n);
+            CHECK(qs->lead_lease.token == tok + 1, "재획득 (token +1)");
+            CHECK(rc == FQ_EEMPTY, "처리 중인 메시지가 다시 전달되지 않음");
+            if (rc == FQ_OK) fq_ack(qs, n);
+            CHECK(p && fq_ack(qs, p) == FQ_OK, "처리를 마친 ack 성공 (회수되지 않았음)");
+            fq_close(qs);
+        }
+    }
+
+    printf("[8] election.lock: 회수당한 보유자는 남의 락을 지우지 않음\n");
+    {
+        fq_queue *x = NULL, *y = NULL;
+        CHECK(fq_open(root, "nodeX", &x) == FQ_OK && fq_open(root, "nodeY", &y) == FQ_OK,
+              "두 노드 핸들");
+        if (x && y) {
+            char ctrl[1280];
+            fq_path(ctrl, sizeof(ctrl), root, FQ_DIR_CONTROL, NULL);
+            uint64_t now = 0;
+            fq_fs_now_ms(ctrl, "test", &now);
+            fq_elock lx, ly;
+            CHECK(fq_election_lock(x, now, &lx) == FQ_OK, "X가 락 획득");
+            CHECK(fq_election_lock(y, now, &ly) == FQ_ELOCKED, "Y는 대기 (X 보유 중)");
+            /* X가 임계 구역에서 오래 멈춤 → Y가 stale로 회수하고 새 락을 만든다 */
+            uint64_t later = now + fq_election_stale_ms() + 1000;
+            CHECK(fq_election_lock(y, later, &ly) == FQ_OK, "Y가 stale 락을 회수해 획득");
+            fq_election_unlock(&lx);             /* X가 깨어나 해제 */
+            CHECK(fq_fs_exists(ly.path) == 1, "X의 해제는 Y의 락을 지우지 않음");
+            fq_elock lz;
+            CHECK(fq_election_lock(x, now, &lz) == FQ_ELOCKED, "그래서 다른 노드는 여전히 대기");
+            fq_election_unlock(&ly);
+            CHECK(fq_fs_exists(ly.path) == 0, "Y의 해제는 자기 락을 지움");
+        }
+        if (x) fq_close(x);
+        if (y) fq_close(y);
+    }
+
     fq_close(qa);
     fq_close(qb);
     printf("\n== 결과: %s (%d 실패) ==\n", fails ? "FAIL" : "PASS", fails);

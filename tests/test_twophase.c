@@ -59,6 +59,9 @@ int main(int argc, char **argv)
     fq_lease lease;
     CHECK(fq_acquire_leadership(q, &lease) == FQ_OK && fq_recover_stale(q, &lease) >= 0, "stale 복구");
     CHECK(fq_consume(q, &m2) == FQ_EEMPTY, "꺼낸 메시지는 stale 복구로도 되살아나지 않음");
+    /* 저수준으로 얻은 리스는 직접 반납한다. fq_close는 fq_consume의 리스(token이 다름)만 반납하므로,
+     * 두지 않으면 리스가 만료될 때까지 남아 같은 디렉터리로 곧바로 다시 돌린 테스트가 리더가 되지 못한다. */
+    fq_release_leadership(q, &lease);
 
     printf("[3] 되돌리기 (rollback = adopt)\n");
     CHECK(fq_adopt(q, f2, NULL) == FQ_OK, "꺼낸 파일을 다시 adopt");
@@ -130,6 +133,28 @@ int main(int argc, char **argv)
     if (p) fq_ack(q, p);
     CHECK(fq_consume(q, &p) == FQ_OK && p && memcmp(p->data, "k3", 2) == 0, "그다음 k3");
     if (p) fq_ack(q, p);
+
+    printf("[7] fq_consume_if: 읽을 수 없는 메시지는 시도로 쳐서 결국 dead/\n");
+    {
+        char junk[700];
+        /* 실행마다 다른 이름: 이전 실행이 dead/에 남긴 같은 이름의 빈 디렉터리는 rename이 덮어써 개수가 늘지 않는다 */
+        uint64_t stamp = 0;
+        fq_fs_now_ms(stage, "nodeT", &stamp);
+        snprintf(junk, sizeof(junk), "%s/incoming/0000000000000000-0000000000-x-junk%llu.msg",
+                 qroot, (unsigned long long)stamp);
+        int nd0 = 0;
+        fq_fs_list(dead, count_cb, &nd0);
+        CHECK(fq_fs_mkdirs(junk) == FQ_OK, "incoming에 일반 파일이 아닌 항목(디렉터리)");
+        int rc = FQ_OK;
+        for (int i = 0; i < FQ_MAX_ATTEMPTS + 2; i++) {
+            fq_msg *jm = NULL;
+            rc = fq_consume_if(q, want_k2, NULL, &jm);
+            if (rc == FQ_OK) fq_ack(q, jm);
+        }
+        CHECK(rc == FQ_EEMPTY, "건너뛰기를 반복하지 않고 큐에서 빠짐");
+        int nd = 0;
+        CHECK(fq_fs_list(dead, count_cb, &nd) == FQ_OK && nd == nd0 + 1, "dead/로 격리");
+    }
 
     fq_close(q);
     printf("%s (%d fail)\n", fails ? "FAILED" : "OK", fails);

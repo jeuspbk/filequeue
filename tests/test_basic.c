@@ -212,13 +212,21 @@ int main(int argc, char **argv)
         /* fq_ack: 리스를 놓친 사이 회수된 메시지의 ack는 ENOENT (중복 전달 신호) */
         CHECK(fq_publish(d4, "r", 1, NULL) == FQ_OK && fq_consume(d4, &m) == FQ_OK, "메시지 claim");
         if (m) {
+            /* 더 새 리더(다른 핸들)가 회수한 상황 흉내. 같은 핸들로는 안 된다: 들고 있는 메시지는
+             * token과 무관하게 회수하지 않는다(처리 중). */
             fq_lease newer = d4->lead_lease;
-            newer.token++;                                  /* 더 새 리더가 회수한 상황 흉내 */
-            fq_recover_stale(d4, &newer);
-            CHECK(fq_ack(d4, m) == FQ_ENOENT, "회수된 메시지의 ack는 FQ_ENOENT");
+            newer.token++;
+            CHECK(fq_recover_stale(d4, &newer) == FQ_OK && fq_ack(d4, m) == FQ_OK,
+                  "같은 핸들은 더 새 token으로도 들고 있는 메시지를 회수하지 않음");
+            CHECK(fq_publish(d4, "r", 1, NULL) == FQ_OK && fq_consume(d4, &m) == FQ_OK, "메시지 claim");
+            fq_queue *d5 = NULL;
+            CHECK(fq_open(lr, "other", &d5) == FQ_OK && d5, "새 리더 핸들");
+            if (d5) fq_recover_stale(d5, &newer);
+            CHECK(m && fq_ack(d4, m) == FQ_ENOENT, "회수된 메시지의 ack는 FQ_ENOENT");
             fq_msg *again = NULL;
-            CHECK(fq_claim(d4, &newer, &again) == FQ_OK, "회수된 메시지가 다시 전달됨");
-            if (again) fq_ack(d4, again);
+            CHECK(d5 && fq_claim(d5, &newer, &again) == FQ_OK, "회수된 메시지가 다시 전달됨");
+            if (again) fq_ack(d5, again);
+            if (d5) fq_close(d5);
         }
         fq_close(d4);
         fq_fs_write_sync(li, "none 0 0\n", 9);

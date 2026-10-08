@@ -359,16 +359,25 @@ int fq_claim_if(fq_queue *q, const fq_lease *lease, fq_want_fn want, void *ud, f
         const char *name = sv.v[i];
         char src[1408];
         fq_path(src, sizeof(src), q->root, FQ_DIR_INCOMING, name);
-        void *data = NULL; size_t len = 0;
-        if (fq_fs_read_file(src, &data, &len) != FQ_OK) continue;   /* 그 사이 사라짐 */
-        if (!want(data, len, ud)) { free(data); continue; }
-
         char base[512];
         uint32_t attempt = 0;
         fq_parse_attempt(name, base, sizeof(base), &attempt);
         char inf_name[640], dst[1408];
         snprintf(inf_name, sizeof(inf_name), "%s__t%llu", name, (unsigned long long)lease->token);
         fq_path(dst, sizeof(dst), q->root, FQ_DIR_INFLIGHT, inf_name);
+
+        void *data = NULL; size_t len = 0;
+        int rrc = fq_fs_read_file(src, &data, &len);
+        if (rrc == FQ_ENOENT) continue;                             /* 그 사이 사라짐 */
+        if (rrc != FQ_OK) {
+            /* 읽을 수 없는 메시지(권한·I/O 오류, 일반 파일이 아닌 항목): fq_claim과 같이 claim해서 실패한
+             * 시도 한 번으로 친다(attempt+1, 한도면 dead/). 건너뛰기만 하면 영원히 남아 매번 다시 읽힌다. */
+            if (fq_fs_rename(src, dst) == FQ_OK && fq_requeue_inflight(q, inf_name, NULL) != FQ_OK)
+                fq_fs_rename(dst, src);                             /* 그것도 안 되면 원래 자리로 */
+            continue;
+        }
+        if (!want(data, len, ud)) { free(data); continue; }
+
         int rc = fq_fs_rename(src, dst);
         if (rc == FQ_ENOENT) { free(data); continue; }
         if (rc != FQ_OK) { free(data); result = FQ_ERR; break; }

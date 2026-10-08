@@ -85,29 +85,48 @@ static int write_leader_info(fq_queue *q, uint64_t token, uint64_t expiry)
 }
 
 /* election.lock 획득. now = FS 시각. FQ_OK = 획득, FQ_ELOCKED = 다른 쪽이 보유.
+ * 락 파일에는 보유자 표시(node_id, instance, 획득마다 새 id)를 쓴다. 해제는 그 표시가 내 것일 때만 지운다:
+ * 임계 구역에서 오래 멈춘 보유자의 락이 stale로 회수된 뒤 그가 깨어나 무조건 지우면, 회수한 노드의 새 락이
+ * 사라져 세 번째 노드가 동시에 임계 구역에 들어간다(같은 leader.info를 읽고 같은 token을 발급).
  * 선출 중 크래시로 남은 stale lock은 회수한다. unlink로 치우면 두 노드가 동시에 회수할 때
  * A가 지우고 새로 만든 락을 B가 다시 지워 둘 다 임계 구역에 들어간다. 대신 고유 이름으로
  * rename한다: rename은 한 쪽만 성공하므로 그 노드만 새 락을 만들고, 진 쪽은 양보한다. */
-static int election_lock(fq_queue *q, uint64_t now, char *lock_path, size_t n)
+int fq_election_lock(fq_queue *q, uint64_t now, fq_elock *lk)
 {
-    fq_path(lock_path, n, q->root, FQ_DIR_CONTROL, "election.lock");
+    fq_path(lk->path, sizeof(lk->path), q->root, FQ_DIR_CONTROL, "election.lock");
+    char gid[64];
+    fq_gen_id(gid, sizeof(gid));
+    int on = snprintf(lk->owner, sizeof(lk->owner), "%s %s %s\n", q->node_id, q->instance, gid);
+    size_t olen = (on > 0 && (size_t)on < sizeof(lk->owner)) ? (size_t)on : strlen(lk->owner);
 
-    int rc = fq_fs_create_new(lock_path);
+    int rc = fq_fs_create_new_data(lk->path, lk->owner, olen);
     if (rc == FQ_EEXIST) {
         uint64_t lock_mtime = 0;
-        if (fq_fs_mtime_ms(lock_path, &lock_mtime) == FQ_OK &&
+        if (fq_fs_mtime_ms(lk->path, &lock_mtime) == FQ_OK &&
             now > lock_mtime + fq_election_stale_ms()) {
-            char gid[64], stale[1408];
-            fq_gen_id(gid, sizeof(gid));
-            snprintf(stale, sizeof(stale), "%s.stale-%s-%s", lock_path, q->node_id, gid);
-            if (fq_fs_rename(lock_path, stale) == FQ_OK) {
+            char sgid[64], stale[1536];
+            fq_gen_id(sgid, sizeof(sgid));
+            snprintf(stale, sizeof(stale), "%s.stale-%s-%s", lk->path, q->node_id, sgid);
+            if (fq_fs_rename(lk->path, stale) == FQ_OK) {
                 fq_fs_unlink(stale);
-                rc = fq_fs_create_new(lock_path);
+                rc = fq_fs_create_new_data(lk->path, lk->owner, olen);
             }
         }
         if (rc == FQ_EEXIST) return FQ_ELOCKED;
     }
     return rc == FQ_OK ? FQ_OK : FQ_ERR;
+}
+
+/* 내 표시가 그대로일 때만 지운다. 다르면(내가 멈춘 사이 회수되어 남이 새로 만든 락) 그대로 둔다.
+ * 읽기와 지우기 사이의 틈은 남지만, "멈춘 시간 전체"였던 창이 ms 단위로 줄어든다.
+ * 읽기가 실패하면(일시 오류) 지우지 않는다: 남의 락을 지우는 것보다 stale 회수를 기다리는 편이 안전하다. */
+void fq_election_unlock(const fq_elock *lk)
+{
+    void *buf = NULL; size_t len = 0;
+    if (fq_fs_read_file(lk->path, &buf, &len) != FQ_OK) return;
+    int mine = len == strlen(lk->owner) && memcmp(buf, lk->owner, len) == 0;
+    free(buf);
+    if (mine) fq_fs_unlink(lk->path);
 }
 
 static int max_token_cb(const char *name, void *ud)
@@ -166,8 +185,8 @@ int fq_acquire_lease(fq_queue *q, fq_lease *lease, int same_node)
         return FQ_ELOCKED;
 
     /* 인수 시도: election.lock 을 배타 생성으로 획득 (직렬화) */
-    char lock_path[1280];
-    int rc = election_lock(q, now, lock_path, sizeof(lock_path));
+    fq_elock lk;
+    int rc = fq_election_lock(q, now, &lk);
     if (rc == FQ_ELOCKED) return FQ_EEXIST;      /* 선출·하트비트가 락을 잡고 있음 */
     if (rc != FQ_OK) return rc;
 
@@ -178,11 +197,11 @@ int fq_acquire_lease(fq_queue *q, fq_lease *lease, int same_node)
     if (fq_fs_now_ms(ctrl, q->node_id, &now) != FQ_OK ||
         read_leader_info(q, &cur) != FQ_OK ||
         token_high_water(q, cur.token, &high) != FQ_OK) {
-        fq_fs_unlink(lock_path);
+        fq_election_unlock(&lk);
         return FQ_ERR;
     }
     if (cur.expiry > now && is_other(q, &cur, same_node)) {
-        fq_fs_unlink(lock_path);
+        fq_election_unlock(&lk);
         return FQ_ELOCKED;                       /* 그 사이 다른 노드가 인수함 */
     }
 
@@ -190,7 +209,7 @@ int fq_acquire_lease(fq_queue *q, fq_lease *lease, int same_node)
     uint64_t expiry = now + fq_lease_ms();
     int wrc = write_leader_info(q, new_token, expiry);
 
-    fq_fs_unlink(lock_path); /* election.lock 해제 */
+    fq_election_unlock(&lk);
 
     if (wrc != FQ_OK) return FQ_ERR;
 
@@ -216,23 +235,23 @@ int fq_renew_lease(fq_queue *q, fq_lease *lease)
 
     /* 인수와 같은 락 안에서 읽고-확인하고-쓴다(파일 머리 주석). 락은 대기 노드가 리스 만료를
      * 관측했을 때만 경합하므로, 살아 있는 리더에게는 거의 항상 비어 있다. */
-    char lock_path[1280];
-    int rc = election_lock(q, now, lock_path, sizeof(lock_path));
+    fq_elock lk;
+    int rc = fq_election_lock(q, now, &lk);
     if (rc != FQ_OK) return rc;   /* FQ_ELOCKED: 선출 진행 중 → 잠시 후 재시도 */
 
     leader_info cur;
-    if (read_leader_info(q, &cur) != FQ_OK) { fq_fs_unlink(lock_path); return FQ_ERR; }
+    if (read_leader_info(q, &cur) != FQ_OK) { fq_election_unlock(&lk); return FQ_ERR; }
 
     /* 여전히 내가 리더인지(fencing) 확인 */
     if (cur.token != lease->token || !is_mine(q, &cur) ||
         strcmp(cur.id, lease->leader_id) != 0) {
-        fq_fs_unlink(lock_path);
+        fq_election_unlock(&lk);
         return FQ_ENOLEADER;
     }
 
     uint64_t expiry = now + fq_lease_ms();
     int wrc = write_leader_info(q, lease->token, expiry);
-    fq_fs_unlink(lock_path);
+    fq_election_unlock(&lk);
     if (wrc != FQ_OK) return FQ_ERR;
 
     lease->lease_expiry_ms = expiry;
@@ -247,19 +266,19 @@ int fq_release_leadership(fq_queue *q, const fq_lease *lease)
     uint64_t now = 0;
     if (fq_fs_now_ms(ctrl, q->node_id, &now) != FQ_OK) return FQ_ERR;
 
-    char lock_path[1280];
-    int rc = election_lock(q, now, lock_path, sizeof(lock_path));
+    fq_elock lk;
+    int rc = fq_election_lock(q, now, &lk);
     if (rc != FQ_OK) return rc;
 
     leader_info cur;
-    if (read_leader_info(q, &cur) != FQ_OK) { fq_fs_unlink(lock_path); return FQ_ERR; }
+    if (read_leader_info(q, &cur) != FQ_OK) { fq_election_unlock(&lk); return FQ_ERR; }
     if (cur.token != lease->token || !is_mine(q, &cur)) {
-        fq_fs_unlink(lock_path);
+        fq_election_unlock(&lk);
         return FQ_ENOLEADER;                     /* 이미 다른 리더: 건드리지 않는다 */
     }
     /* token은 그대로 두고 만료시각만 0으로: 다음 인수자는 대기 없이 token+1로 이어받는다 */
     int wrc = write_leader_info(q, lease->token, 0);
-    fq_fs_unlink(lock_path);
+    fq_election_unlock(&lk);
     return wrc == FQ_OK ? FQ_OK : FQ_ERR;
 }
 
@@ -281,10 +300,14 @@ static int recover_cb(const char *name, void *ud)
 
     /* 더 새 token = 나보다 새 리더의 것(내가 좀비) → 건드리지 않음 */
     if (token > c->lease->token) return 0;
-    /* 내 token이고 이 핸들이 들고 있음 = 처리 중 → 건드리지 않음.
+    /* 이 핸들이 들고 있음 = 처리 중 → token과 무관하게 건드리지 않음. 옛 token이어도 마찬가지다:
+     * 리스 자체 만료 뒤 이 핸들이 리더십을 다시 얻으면(token +1) 처리 중인 메시지가 옛 token으로 남는다.
+     * 그 사이 다른 리더가 있었다면 그 리더가 이미 회수했을 것이므로, 파일이 남아 있고 내가 들고 있다면
+     * 처리 중이 맞다. (예전에는 같은 token만 봐서 처리 중인 메시지를 회수해 같은 소비자에게 다시 주고
+     * attempt를 헛되이 올렸다.)
      * 내 token인데 아무도 들고 있지 않으면 고아다(ack·nack 실패, ack 없이 free). 회수하지 않으면 리더가
      * 바뀔 때까지 멈춘다. 그래서 lease는 그것을 얻은 핸들로만 claim해야 한다(fq.h). */
-    if (token == c->lease->token && fq_is_held(c->q, name)) return 0;
+    if (fq_is_held(c->q, name)) return 0;
 
     /* 죽은 선임자·좀비의 것, 또는 내 고아 → 실패한 시도 한 번으로 회수 */
     int dead = 0;

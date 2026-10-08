@@ -20,7 +20,8 @@ FQ_LEASE_MS_OVERRIDE=1500 ./build/fq_consumer /shared/q nodeA out.log 60000
 리스/재시도 정책은 `include/fq.h`의 `#define`으로 조정한다([API 레퍼런스](#튜닝-노브-컴파일-타임-define) 참고).
 값을 바꾼 뒤에는 재빌드해야 한다.
 
-- **`FQ_LEASE_MS` / `FQ_HEARTBEAT_MS`**: 하트비트는 리스의 1/3~1/5로 둔다. 그래야 한두 번의
+- **`FQ_LEASE_MS` / `FQ_HEARTBEAT_MS`**: 하트비트는 리스의 1/3~1/5로 둔다(`fq_consume`은 리스/3으로 자동,
+  `FQ_HEARTBEAT_MS`는 저수준 API용 권장값). 그래야 한두 번의
   하트비트 실패가 곧바로 리스 만료로 이어지지 않는다.
 - **`FQ_MAX_ATTEMPTS`**: 같은 메시지가 이 횟수만큼 재처리(재큐잉)되면 `dead/`로 격리된다.
   poison 메시지가 큐를 무한히 막는 것을 방지한다.

@@ -115,6 +115,28 @@ int fq_fs_create_new(const char *path)
     return FQ_OK;
 }
 
+int fq_fs_create_new_data(const char *path, const void *data, size_t len)
+{
+    HANDLE h = CreateFileA(path, GENERIC_WRITE, 0, NULL,
+                           CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) {
+        DWORD e = GetLastError();
+        return (e == ERROR_FILE_EXISTS || e == ERROR_ALREADY_EXISTS) ? FQ_EEXIST : FQ_ERR;
+    }
+    const char *p = (const char *)data;
+    while (len > 0) {
+        DWORD chunk = (len > 0x40000000u) ? 0x40000000u : (DWORD)len;
+        DWORD wrote = 0;
+        if (!WriteFile(h, p, chunk, &wrote, NULL) || wrote == 0) {
+            CloseHandle(h); DeleteFileA(path); return FQ_ERR;
+        }
+        p += wrote;
+        len -= wrote;
+    }
+    CloseHandle(h);
+    return FQ_OK;
+}
+
 int fq_fs_unlink(const char *path)
 {
     if (DeleteFileA(path)) return FQ_OK;

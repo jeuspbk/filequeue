@@ -31,7 +31,7 @@ API의 **정본은 `include/fq.h`의 선언과 주석**이다. 이 절은 표 �
 |---|---|---|
 | `FQ_MAX_ATTEMPTS` | 5 | 재시도 한도. 초과 시 `dead/`로 이동 |
 | `FQ_LEASE_MS` | 15000 | 리스 유효시간(ms) |
-| `FQ_HEARTBEAT_MS` | 3000 | 리더 하트비트 주기(ms). 리스의 1/3~1/5 권장 |
+| `FQ_HEARTBEAT_MS` | 3000 | 저수준 API(`fq_renew_lease`)를 쓸 때 권장 갱신 주기(ms). 리스의 1/3~1/5. `fq_consume`은 이 값을 쓰지 않고 리스/3(기본 5000ms)으로 갱신한다 |
 | `FQ_ELECTION_STALE_MS` | 30000 | `election.lock` 강제 회수 임계의 상한(ms). 실제 임계 = min(이 값, 리스/3) |
 
 ## 데이터 구조
@@ -95,7 +95,7 @@ typedef struct {
 
 | 함수 | 시그니처 | 설명 |
 |---|---|---|
-| `fq_claim_if` | `int fq_claim_if(fq_queue *q, const fq_lease *lease, fq_want_fn want, void *ud, fq_msg **out)` | `incoming/`을 오래된 순으로 보며 `want(data, len, ud)`가 1을 돌려주는 첫 메시지를 claim(0이면 건너뜀). 후보마다 파일을 읽으므로 `fq_claim`보다 비싸다. 원하는 메시지가 없으면 `FQ_EEMPTY`. |
+| `fq_claim_if` | `int fq_claim_if(fq_queue *q, const fq_lease *lease, fq_want_fn want, void *ud, fq_msg **out)` | `incoming/`을 오래된 순으로 보며 `want(data, len, ud)`가 1을 돌려주는 첫 메시지를 claim(0이면 건너뜀). 후보마다 파일을 읽으므로 `fq_claim`보다 비싸다. 읽을 수 없는 메시지는 `fq_claim`과 같이 실패한 시도로 쳐서(attempt+1, 한도면 `dead/`) 건너뛴다. 원하는 메시지가 없으면 `FQ_EEMPTY`. |
 | `fq_release` | `int fq_release(fq_queue *q, fq_msg *m)` | claim한 메시지를 원래 이름 그대로 `incoming/`에 되돌린다(attempt·순서 유지, 들여다보기 용). 성공하면 `m` 해제. |
 
 ```c

@@ -101,7 +101,9 @@ fq_fs_posix.c / fq_fs_win32.c   (플랫폼 원자 연산 추상화)
   `fq_now_mono_ms`로 잰다. GC 멈춤, 절전, 긴 처리) 스스로 내려놓고 election.lock을 거쳐 다시 얻는다. 메시지 하나 처리가 리스보다 길 수 있으면
   처리 중 `fq_heartbeat(q)`를 호출할 것.
 - **election.lock stale 회수**는 unlink가 아니라 고유 이름으로 rename한 뒤 새로 만든다. unlink면
-  동시에 회수하는 두 노드가 서로의 새 락을 지워 둘 다 임계 구역에 들어간다.
+  동시에 회수하는 두 노드가 서로의 새 락을 지워 둘 다 임계 구역에 들어간다. 락은 `fq_election_lock`/
+  `fq_election_unlock`으로만 다룰 것: 파일에 보유자 표시를 쓰고, 해제는 표시가 내 것일 때만 지운다
+  (무조건 unlink하면 회수당한 뒤 깨어난 옛 보유자가 새 보유자의 락을 지워 같은 token이 두 번 발급된다).
 - **시각**: 노드 간 clock skew를 피하려 `fq_fs_now_ms`(공유 FS에 임시 파일을 만들어 mtime을 읽음)를
   단일 시각 출처로 사용한다. 리스 비교에 로컬 wall-clock을 쓰지 말 것.
   메시지 파일명의 시각도 `fq_queue.c`의 `msg_clock_ms`가 FS 시각 오프셋(30초마다 재측정)을 더해
@@ -128,5 +130,7 @@ fq_fs_posix.c / fq_fs_win32.c   (플랫폼 원자 연산 추상화)
 - 핸들은 들고 있는 메시지를 추적한다(`q->held`, `fq_msg.owner`). `fq_recover_stale`은 옛 token뿐 아니라
   "내 token인데 들고 있지 않은" 고아(ack·nack 실패, ack 없이 free)도 회수한다 — 내 token은 원래 회수
   대상이 아니라서 없으면 리더가 바뀔 때까지 멈춘다. 그러므로 lease는 그것을 얻은 핸들로만 claim할 것.
+  반대로 **이 핸들이 들고 있는 메시지는 token과 무관하게 회수하지 않는다**: 리스 자체 만료 뒤 재획득하면
+  (token +1) 처리 중인 메시지가 옛 token으로 남는데, 이를 회수하면 같은 소비자에게 다시 주고 attempt를 헛되이 올린다.
 - 대상 스토리지가 바뀌면 `test_atomicity`를 그 스토리지에서 먼저 돌려 rename/create/lock 원자성을
   확인할 것. 이 전제가 깨지면 큐 정확성이 보장되지 않는다 (`DESIGN.md` §0).
