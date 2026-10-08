@@ -36,8 +36,17 @@ bash tests/test_concurrency.sh ./build/fq_producer.exe ./build/fq_consumer.exe
 - 네이티브 Windows(MSVC) → `src/fq_fs_win32.c`
 - 그 외(POSIX, **Cygwin 포함**) → `src/fq_fs_posix.c`
 
-→ 현재 머신에서는 항상 **POSIX 경로**로 빌드된다. `fq_fs_win32.c`는 MSVC 빌드 전용이며
-이 머신에서는 컴파일조차 되지 않으므로, 수정 시 별도 검증이 필요하다.
+→ cmake 빌드는 이 머신에서 항상 **POSIX 경로**다. `fq_fs_win32.c`는 Cygwin의 MinGW 크로스 컴파일러로
+네이티브 Windows 실행 파일을 만들어 검증한다(수정 시 반드시):
+
+```bash
+O=<스크래치 디렉터리>; CC=x86_64-w64-mingw32-gcc; FL="-std=c11 -O1 -Wall -Wextra -I$PWD/include"
+(cd "$O" && $CC $FL -c "$PWD"/src/*.c)
+for t in test_atomicity test_basic test_consume test_twophase test_clock test_election; do $CC $FL -o "$O/$t.exe" tests/$t.c "$O"/*.o; done
+for e in fq_producer fq_consumer; do $CC $FL -o "$O/$e.exe" examples/$e.c "$O"/*.o; done
+"$O/test_basic.exe" "$O/q"   # 네이티브 exe에는 Windows 경로(C:/...)를 줄 것 (/tmp 불가)
+TMPDIR="$O/tmpd" bash tests/test_concurrency.sh "$O/fq_producer.exe" "$O/fq_consumer.exe"
+```
 
 ## 아키텍처 (핵심)
 
@@ -90,7 +99,8 @@ fq_fs_posix.c / fq_fs_win32.c   (플랫폼 원자 연산 추상화)
   멈췄던 옛 리더가 새 리더를 옛 token으로 덮어써 token이 되돌아간다). 락이 잡혀 있으면 `FQ_ELOCKED`.
   그래서 stale 락 회수 임계는 `fq_election_stale_ms()`(= min(30초, 리스/3))로 읽는다 — 리스보다 길면
   락을 쥔 채 죽은 노드가 리더까지 멈춘다. 정상 종료는 `fq_close`/`fq_release_leadership`으로 반납.
-  leader.info 교체는 항상 tmp에 쓰고 `fq_fs_rename`으로 원자 교체한다. 삭제 후 생성으로 바꾸면 그
+  leader.info 교체는 항상 tmp에 쓰고 `fq_fs_replace`로 원자 교체한다(Win32 `MoveFileEx`는 읽는 쪽이
+  열고 있으면 교체를 거부한다. `fq_fs_replace`는 claim처럼 src를 다투는 곳에는 쓰지 말 것). 삭제 후 생성으로 바꾸면 그
   사이에 읽는 노드가 "리더 없음"을 보고 살아 있는 리더를 밀어낸다 (`tests/test_election.c`가 이 경합을 검사).
 - **leader.info 읽기는 `fq_read_replaced`**: 교체형 rename이 읽는 쪽에 원자적이지 않은 FS(Cygwin/NTFS
   실측)가 있어 ENOENT를 짧게 재시도한다. 그냥 `fq_fs_read_file`로 읽으면 "리더 없음"으로 오인한다.

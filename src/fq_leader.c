@@ -78,8 +78,8 @@ static int write_leader_info(fq_queue *q, uint64_t token, uint64_t expiry)
     if (fq_fs_write_sync(tmp_path, line, (size_t)n) != FQ_OK) return FQ_ERR;
 
     /* 원자적 교체. 삭제→생성 두 단계로 하면 그 사이에 읽는 노드가 "리더 없음(token 0)"을
-     * 보고 살아 있는 리더를 밀어낸다. */
-    int rc = fq_fs_rename(tmp_path, dst);
+     * 보고 살아 있는 리더를 밀어낸다. tmp는 내 것이므로 열린 dst도 교체하는 fq_fs_replace를 쓴다. */
+    int rc = fq_fs_replace(tmp_path, dst);
     if (rc != FQ_OK) fq_fs_unlink(tmp_path);
     return rc;
 }

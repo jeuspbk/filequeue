@@ -29,6 +29,13 @@ int  fq_fs_write_sync(const char *path, const void *data, size_t len);
  * 메시지 상태 전이(대상 이름이 구조상 유일)와 leader.info 교체에 쓴다. */
 int  fq_fs_rename(const char *src, const char *dst);
 
+/* fq_fs_rename과 같되 src가 호출자 소유의 임시 파일일 때만 쓴다(leader.info 교체). 다른 쪽이 dst를
+ * 열고 있어도 교체한다: Win32의 MoveFileEx는 dst가 열려 있으면 ACCESS_DENIED라, 대기 노드가 leader.info를
+ * 쉬지 않고 읽으면 리더의 하트비트가 재시도를 다 쓰고 실패했다(MinGW 실측). Win32는 핸들 기반 POSIX 의미
+ * rename(Win10 1809+, NTFS)을 쓰고, 지원하지 않으면 fq_fs_rename으로 대신한다. 핸들 기반 rename은 핸들이
+ * 파일을 따라가므로 src를 두 쪽이 다투는 claim에는 쓰면 안 된다(둘 다 성공한다). POSIX는 rename(2). */
+int  fq_fs_replace(const char *src, const char *dst);
+
 /* 원자적 rename(이동은 항상 한 단계). 대상이 이미 있으면 FQ_EEXIST (덮어쓰지 않음).
  * 대상이 호출자 소유의 임의 경로일 때(fq_take)만 쓴다. 대상 존재 검사는 Win32·Linux(renameat2)에서는
  * rename과 원자적이지만 그 밖의 POSIX(Cygwin 등)에서는 검사 후 rename이라, 그 사이 dst를 만드는 쪽과

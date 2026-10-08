@@ -6,6 +6,12 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#if defined(_WIN32) && !defined(__CYGWIN__)
+#  include <direct.h>
+#  define rmdir _rmdir
+#else
+#  include <unistd.h>
+#endif
 
 static int fails = 0;
 #define CHECK(cond, msg) do { \
@@ -317,7 +323,7 @@ int main(int argc, char **argv)
             CHECK(h && fq_ack(pq, h) == FQ_OK, "들고 있던 메시지 ack 성공 (회수되지 않았음)");
 
             fq_close(pq);
-            remove(dead_bad);                                     /* 다음 실행 대비 (빈 디렉터리) */
+            rmdir(dead_bad);         /* 다음 실행 대비 (빈 디렉터리. Windows CRT의 remove는 디렉터리를 못 지운다) */
         }
     }
 

@@ -89,6 +89,11 @@ int fq_fs_rename(const char *src, const char *dst)
     return FQ_OK;
 }
 
+int fq_fs_replace(const char *src, const char *dst)
+{
+    return fq_fs_rename(src, dst);   /* rename(2)은 dst가 열려 있어도 교체한다 */
+}
+
 int fq_fs_rename_noreplace(const char *src, const char *dst)
 {
     /* 이동은 언제나 rename(2) 한 번이다: 크래시 시점과 무관하게 파일은 src나 dst 한 곳에만 있다.

@@ -38,6 +38,11 @@
    약 0.4~2%가 ENOENT를 본다(`test_atomicity` [6] 실측). 기존 파일을 교체하는 것은 `leader.info`뿐이며,
    이를 읽을 때는 `fq_read_replaced`로 ENOENT를 짧게 재시도해 흡수한다. 재시도 후에도 못 읽는 스토리지는
    쓸 수 없다(`test_atomicity`가 FAIL).
+   반대 방향도 있다: Win32 `MoveFileEx`는 대상이 열려 있으면 교체를 거부(ACCESS_DENIED)한다. 대기 노드가
+   `leader.info`를 쉬지 않고 읽으면 리더의 하트비트가 재시도를 다 쓰고 실패했다(MinGW 네이티브 빌드 실측,
+   `test_election`). 그래서 `leader.info` 교체만 `fq_fs_replace`로 하며, Win32에서는 핸들 기반 POSIX 의미
+   rename(Win10 1809+, NTFS)을 쓴다. 이 rename은 핸들이 파일을 따라가므로 src를 두 쪽이 다투는 claim에
+   쓰면 둘 다 성공한다 — 내 임시 파일이 src인 교체에만 쓴다.
 2. **`O_EXCL` / `CREATE_NEW` 배타 생성은 원자적** ← 리더 선출 mutex
 3. (선택) OS 권고 락(`LockFileEx` / `fcntl`)의 노드 간 신뢰성 ← 있으면 최적화, 없어도 동작
 
@@ -298,7 +303,8 @@ int  fq_claim(fq_queue *q, const fq_lease *lease, fq_msg **out);   /* FQ_EEMPTY 
 | 연산 | Win32 | POSIX |
 |---|---|---|
 | 배타 생성 (mutex) | `CreateFile(CREATE_NEW)` | `open(O_CREAT\|O_EXCL)` |
-| 원자 rename (큐 내부 전이, leader.info 교체) | `MoveFileExA(.., MOVEFILE_REPLACE_EXISTING\|MOVEFILE_WRITE_THROUGH)` | `rename(2)` |
+| 원자 rename (큐 내부 전이) | `MoveFileExA(.., MOVEFILE_REPLACE_EXISTING\|MOVEFILE_WRITE_THROUGH)` | `rename(2)` |
+| 교체, 대상이 열려 있어도 (`leader.info`만, `fq_fs_replace`) | `SetFileInformationByHandle(FileRenameInfoEx, REPLACE_IF_EXISTS\|POSIX_SEMANTICS)`, 미지원이면 위의 `MoveFileExA` | `rename(2)` |
 | rename, 대상 있으면 실패 (`fq_take`만) | `MoveFileExA(.., MOVEFILE_WRITE_THROUGH)` | Linux `renameat2(RENAME_NOREPLACE)`, 그 밖은 존재 검사 + `rename(2)` (이동은 항상 한 단계) |
 | 파일 fsync | `FlushFileBuffers` / `FILE_FLAG_WRITE_THROUGH` | `fsync` |
 | 디렉터리 영속화 | NTFS 저널 (별도 dir fsync API 없음, write-through로 대체) | `fsync(dir_fd)` |

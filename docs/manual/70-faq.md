@@ -65,8 +65,9 @@ NTP 동기화가 안 된 환경에서도 동작한다.
 ## Windows에서 빌드하려면
 
 Cygwin 환경에서는 POSIX 경로(`fq_fs_posix.c`)로 그대로 빌드된다. 네이티브 Windows(MSVC)에서는
-`fq_fs_win32.c`가 선택된다. 단, win32 구현은 개발 환경(Cygwin)에서 컴파일되지 않아 MSVC에서 별도
-검증이 필요하다. 도입 전 MSVC로 빌드해 `ctest`와 `test_atomicity`를 대상 스토리지에서 확인하라.
+`fq_fs_win32.c`가 선택된다. win32 구현은 MinGW 네이티브 빌드로 단위·동시성·failover 테스트를 통과했지만
+MSVC로는 아직 빌드해 보지 않았다. 도입 전 대상 컴파일러로 빌드해 `ctest`와 `test_atomicity`를 대상
+스토리지에서 확인하라.
 
 ## `FQ_EINVAL`(-7)이 나와요
 

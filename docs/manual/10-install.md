@@ -54,7 +54,7 @@ bash tests/test_concurrency.sh ./build/fq_producer ./build/fq_consumer
 
 | 플랫폼 | 사용 구현 | 핵심 API |
 |---|---|---|
-| 네이티브 Windows (MSVC) | `src/fq_fs_win32.c` | `MoveFileEx`, `CreateFile(CREATE_NEW)`, `LockFileEx`, `FlushFileBuffers` |
+| 네이티브 Windows (MSVC) | `src/fq_fs_win32.c` | `MoveFileEx`, `SetFileInformationByHandle(FileRenameInfoEx)`, `CreateFile(CREATE_NEW)`, `LockFileEx`, `FlushFileBuffers` |
 | POSIX / **Cygwin** 포함 | `src/fq_fs_posix.c` | `rename`/`link`, `open(O_EXCL)`, `fcntl(F_SETLK)`, `fsync` |
 
 Cygwin은 POSIX를 제공하므로 항상 POSIX 경로로 빌드된다. 새 FS 연산이 필요하면 `fq_fs.h`에

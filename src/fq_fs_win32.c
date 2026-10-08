@@ -1,8 +1,8 @@
 /* fq_fs_win32.c - 네이티브 Win32 원자 연산 구현
  *
  * 주의: 이 파일은 MSVC 등 네이티브 Windows 빌드에서만 컴파일된다
- * (_WIN32 && !__CYGWIN__). 현재 개발 머신은 Cygwin gcc 이므로 fq_fs_posix.c가
- * 사용되며, 이 파일은 아직 실기 검증되지 않았다 (DESIGN.md §7-1 하니스로 검증 예정).
+ * (_WIN32 && !__CYGWIN__). 개발 머신의 cmake 빌드(Cygwin)는 fq_fs_posix.c를 쓰므로, 이 파일은
+ * MinGW 크로스 컴파일러로 네이티브 빌드해 검증한다(CLAUDE.md). MSVC 빌드는 아직 검증되지 않았다.
  */
 #if defined(_WIN32) && !defined(__CYGWIN__)
 
@@ -90,6 +90,49 @@ int fq_fs_rename(const char *src, const char *dst)
             return FQ_ERR;
         Sleep(1);
     }
+}
+
+/* FILE_RENAME_INFO의 Win10 RS1+ 배치(Flags). SDK마다 _WIN32_WINNT에 따라 선언이 달라 직접 둔다. */
+typedef struct {
+    DWORD  Flags;
+    HANDLE RootDirectory;
+    DWORD  FileNameLength;
+    WCHAR  FileName[1];
+} fq_rename_info_ex;
+#define FQ_FILE_RENAME_INFO_EX      22   /* FILE_INFO_BY_HANDLE_CLASS FileRenameInfoEx */
+#define FQ_RENAME_REPLACE_IF_EXISTS 0x1
+#define FQ_RENAME_POSIX_SEMANTICS   0x2
+
+int fq_fs_replace(const char *src, const char *dst)
+{
+    /* 핸들 기반 POSIX 의미 rename: dst를 FILE_SHARE_DELETE로 연 독자가 있어도 교체된다(fq_fs.h).
+     * FileName은 전체 경로여야 한다(상대 이름은 src 디렉터리 기준으로 해석된다). */
+    WCHAR wdst[1408], wfull[1408];
+    if (MultiByteToWideChar(CP_ACP, 0, dst, -1, wdst, 1408) > 0) {
+        DWORD fl = GetFullPathNameW(wdst, 1408, wfull, NULL);
+        HANDLE h = (fl > 0 && fl < 1408)
+            ? CreateFileA(src, DELETE | SYNCHRONIZE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                          NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL)
+            : INVALID_HANDLE_VALUE;
+        if (h != INVALID_HANDLE_VALUE) {
+            size_t nbytes = (size_t)fl * sizeof(WCHAR);
+            size_t sz = sizeof(fq_rename_info_ex) + nbytes;
+            fq_rename_info_ex *ri = (fq_rename_info_ex *)calloc(1, sz);
+            BOOL ok = FALSE;
+            if (ri) {
+                ri->Flags = FQ_RENAME_REPLACE_IF_EXISTS | FQ_RENAME_POSIX_SEMANTICS;
+                ri->FileNameLength = (DWORD)nbytes;
+                memcpy(ri->FileName, wfull, nbytes);
+                ok = SetFileInformationByHandle(h, (FILE_INFO_BY_HANDLE_CLASS)FQ_FILE_RENAME_INFO_EX,
+                                                ri, (DWORD)sz);
+                free(ri);
+            }
+            CloseHandle(h);
+            if (ok) return FQ_OK;
+        }
+    }
+    /* 구버전 OS·미지원 FS(SMB 등)·그 밖의 실패: 기존 경로(교체 실패 시 짧게 재시도) */
+    return fq_fs_rename(src, dst);
 }
 
 int fq_fs_rename_noreplace(const char *src, const char *dst)
@@ -200,7 +243,7 @@ int fq_fs_list(const char *dir, fq_dir_cb cb, void *ud)
     HANDLE h = FindFirstFileA(pat, &fd);
     if (h == INVALID_HANDLE_VALUE) {
         DWORD e = GetLastError();
-        /* "<dir>/*"는 빈 디렉터리에서도 . .. 를 돌려주므로 NOT_FOUND는 디렉터리 자체가 없다는 뜻 */
+        /* 전체 일치 패턴은 빈 디렉터리에서도 . .. 를 돌려주므로 NOT_FOUND는 디렉터리 자체가 없다는 뜻 */
         return (e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND) ? FQ_ENOENT : FQ_ERR;
     }
 
