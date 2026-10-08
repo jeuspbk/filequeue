@@ -98,15 +98,18 @@ int fq_takeover(fq_queue *q)
         return FQ_OK;                            /* 이미 이 핸들이 리더 */
     q->lead_held = 0;
     /* election.lock은 정상 선출·하트비트 동안 잠깐만 잡힌다 → 짧게 재시도. 죽은 선임자가 쥔 채 남긴
-     * 락이면 stale 회수(fq_election_stale_ms) 전까지 FQ_ELOCKED다. */
+     * 락이면 stale 회수(fq_election_stale_ms) 전까지 FQ_ELOCKED다.
+     * 리스 자체 만료 감지의 기준 시각은 성공한 시도를 시작하기 전에 잰다(lead와 같이): 끝난 뒤에 재면 FS에 쓴
+     * 만료보다 그 시도의 소요 시간(leader.info fsync 등)만큼 늦게 내려놓는다. */
     int rc = fq_acquire_lease(q, &q->lead_lease, 1);
     for (int i = 0; rc == FQ_EEXIST && i < HEARTBEAT_LOCK_RETRIES; i++) {
         fq_sleep_ms(10);
+        now = fq_now_mono_ms();
         rc = fq_acquire_lease(q, &q->lead_lease, 1);
     }
     if (rc == FQ_EEXIST || rc == FQ_ELOCKED) return FQ_ELOCKED;
     if (rc != FQ_OK) return FQ_ERR;
-    took_lease(q, fq_now_mono_ms());
+    took_lease(q, now);
     return FQ_OK;
 }
 

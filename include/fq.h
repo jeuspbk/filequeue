@@ -168,6 +168,8 @@ int  fq_return(fq_queue *q, const char *path, uint32_t attempt);
  *                    읽으므로 fq_claim_if처럼 비싸다. 그런 메시지가 없으면 FQ_EEMPTY(아무것도 바뀌지 않음.
  *                    fq_adopt_ex는 path가 그대로 남는다 - FQ_ENOENT "이미 옮김"과 구분된다). 새 이름은 대상의 이름을 바탕으로 만들므로,
  *                    끼워 넣은 메시지 앞에 다시 끼워 넣기를 거듭해 이름이 FQ_ORDER_NAME_MAX를 넘으면 FQ_EINVAL.
+ * BEFORE는 대상의 정렬 키(<ms>-<seq>)만 쓰므로, 정렬 키가 같은 다른 producer의 메시지가 대상 앞에 있으면
+ * 그것보다도 앞에 들어간다(대상보다 앞인 것은 그대로. 드묾: 같은 ms에 seq까지 같아야 한다).
  * 자리는 이름 정렬로만 정해진다(별도 메타파일 없음, 상태 전이는 여전히 rename 한 번).
  * fq_claim은 나열을 캐시하므로, 다른 핸들이 맨 앞에 넣은 메시지는 그 캐시를 다 쓴 다음 나열부터 본다.
  * fq_claim_if·fq_consume_if는 매번 나열하므로 바로 본다. 노드가 여럿이면 HEAD끼리의 순서는 각자의
