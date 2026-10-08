@@ -279,7 +279,7 @@ int  fq_claim(fq_queue *q, const fq_lease *lease, fq_msg **out);   /* FQ_EEMPTY 
 |---|---|---|
 | 배타 생성 (mutex) | `CreateFile(CREATE_NEW)` | `open(O_CREAT\|O_EXCL)` |
 | 원자 rename (큐 내부 전이, leader.info 교체) | `MoveFileExA(.., MOVEFILE_REPLACE_EXISTING\|MOVEFILE_WRITE_THROUGH)` | `rename(2)` |
-| rename, 대상 있으면 실패 (`fq_take`만) | `MoveFileExA(.., MOVEFILE_WRITE_THROUGH)` | `link` + `unlink` (두 단계) |
+| rename, 대상 있으면 실패 (`fq_take`만) | `MoveFileExA(.., MOVEFILE_WRITE_THROUGH)` | Linux `renameat2(RENAME_NOREPLACE)`, 그 밖은 존재 검사 + `rename(2)` (이동은 항상 한 단계) |
 | 파일 fsync | `FlushFileBuffers` / `FILE_FLAG_WRITE_THROUGH` | `fsync` |
 | 디렉터리 영속화 | NTFS 저널 (별도 dir fsync API 없음, write-through로 대체) | `fsync(dir_fd)` |
 | 권고 락 (선택) | `LockFileEx(EXCLUSIVE\|FAIL_IMMEDIATELY)` | `fcntl(F_SETLK)` / `flock` |

@@ -29,9 +29,10 @@ int  fq_fs_write_sync(const char *path, const void *data, size_t len);
  * 메시지 상태 전이(대상 이름이 구조상 유일)와 leader.info 교체에 쓴다. */
 int  fq_fs_rename(const char *src, const char *dst);
 
-/* 원자적 rename. 대상이 이미 있으면 FQ_EEXIST (덮어쓰지 않음).
- * 대상이 호출자 소유의 임의 경로일 때(fq_take)만 쓴다. POSIX 구현은 link+unlink라
- * 두 단계이므로 큐 내부 상태 전이에는 fq_fs_rename을 쓸 것. */
+/* 원자적 rename(이동은 항상 한 단계). 대상이 이미 있으면 FQ_EEXIST (덮어쓰지 않음).
+ * 대상이 호출자 소유의 임의 경로일 때(fq_take)만 쓴다. 대상 존재 검사는 Win32·Linux(renameat2)에서는
+ * rename과 원자적이지만 그 밖의 POSIX(Cygwin 등)에서는 검사 후 rename이라, 그 사이 dst를 만드는 쪽과
+ * 경합한다. 큐 내부 상태 전이에는 fq_fs_rename을 쓸 것. */
 int  fq_fs_rename_noreplace(const char *src, const char *dst);
 
 /* 빈 파일을 원자적·배타적으로 생성. 이미 있으면 FQ_EEXIST. */

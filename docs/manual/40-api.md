@@ -131,13 +131,14 @@ typedef int (*fq_want_fn)(const void *data, size_t len, void *ud);
 
 트랜잭션 관리자가 큐 밖(**같은 파일시스템**)의 파일에 메시지를 보관했다가 결정에 따라 원자적 rename
 한 번으로 큐에 넣거나 뺀다. 원본이 옮겨지면 사라지므로 크래시 후 같은 호출을 다시 해도 중복이
-생기지 않는다(멱등). 단 POSIX의 `fq_take`는 link+unlink 두 단계라, 그 사이 크래시하면 같은 메시지가
-`path`와 `inflight/`에 함께 남고 inflight 쪽은 나중에 복구되어 다시 전달된다(at-least-once 범위의 중복).
+생기지 않는다(멱등). `fq_take`도 모든 플랫폼에서 rename 한 번이라, 어느 시점에 크래시해도 메시지는
+`inflight/`나 `path` 한 곳에만 있다. `path`가 이미 있으면 `FQ_EEXIST`(덮어쓰지 않음). 단 Linux가 아닌
+POSIX(Cygwin 등)에서는 존재 검사와 rename이 분리되어 있으므로 `path`는 호출자만 쓰는 새 이름이어야 한다.
 
 | 함수 | 시그니처 | 설명 |
 |---|---|---|
 | `fq_adopt` | `int fq_adopt(fq_queue *q, const char *path, const char *stream_key)` | 이미 영속된(fsync된) 파일 `path`를 새 메시지로 큐에 넣는다(발행 시각은 지금). `FQ_ENOENT` = `path`가 없음(이미 넣었음). |
-| `fq_take` | `int fq_take(fq_queue *q, fq_msg *m, const char *path)` | claim한 `m`을 큐에서 꺼내 `path`로 옮긴다(ack 대신). 성공하면 `m` 해제 + `path` 디렉터리 fsync. 실패하면 `m`은 claim 상태 그대로(`fq_nack` 가능). |
+| `fq_take` | `int fq_take(fq_queue *q, fq_msg *m, const char *path)` | claim한 `m`을 큐에서 꺼내 `path`로 옮긴다(ack 대신). 성공하면 `m` 해제 + `path` 디렉터리 fsync. 실패하면 `m`은 claim 상태 그대로(`fq_nack` 가능; `FQ_EEXIST` = `path`가 이미 있음, `FQ_ENOENT` = 이미 회수됨). |
 | `fq_return` | `int fq_return(fq_queue *q, const char *path, uint32_t attempt)` | `fq_take`로 꺼낸 파일을 `fq_nack`처럼 되돌린다. `attempt`는 꺼낼 때의 `m->attempt`; attempt+1로 `incoming/`에 넣고 한도에 닿으면 `dead/`. 이름은 새로 붙어(시각 = 지금, stream_key 없음) 원래 순서·파티션은 유지되지 않는다. `FQ_ENOENT` = 이미 되돌렸음. |
 
 ## 유지보수 함수

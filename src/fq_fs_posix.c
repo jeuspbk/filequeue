@@ -1,6 +1,10 @@
 /* fq_fs_posix.c - POSIX/Cygwin 원자 연산 구현 */
 #if !defined(_WIN32) || defined(__CYGWIN__)
 
+#if defined(__linux__) && !defined(_GNU_SOURCE)
+#define _GNU_SOURCE        /* renameat2 / RENAME_NOREPLACE (glibc 2.28+) */
+#endif
+
 #include "fq_fs.h"
 #include "fq.h"
 #include "fq_internal.h"
@@ -87,28 +91,20 @@ int fq_fs_rename(const char *src, const char *dst)
 
 int fq_fs_rename_noreplace(const char *src, const char *dst)
 {
-    /* POSIX rename(2)은 대상을 덮어쓴다. fail-if-exists 의미를 위해 link+unlink 사용.
-     * 두 단계라 크래시/경합 시 src와 dst가 잠시 공존할 수 있다 → 큐 내부 전이에는 쓰지 않는다. */
-    if (link(src, dst) != 0) {
-        if (errno == EEXIST) return FQ_EEXIST;
-        if (errno == ENOENT) return FQ_ENOENT;
-        /* link 미지원 FS 폴백: 대상 존재 검사 후 rename (경합에 약함, 스캐폴드) */
-        if (errno == EPERM || errno == ENOSYS) {
-            if (access(dst, F_OK) == 0) return FQ_EEXIST;
-            if (rename(src, dst) != 0)
-                return (errno == ENOENT) ? FQ_ENOENT : FQ_ERR;
-            return FQ_OK;
-        }
-        return FQ_ERR;
-    }
-    if (unlink(src) != 0) {
-        /* src가 남으면 같은 메시지가 두 곳에 있다(inflight의 src는 나중에 recover로 재전달).
-         * dst를 거둬 "옮기지 않음"으로 되돌린다. ENOENT면 그 사이 다른 쪽이 src를 옮긴 것이다. */
-        int e = errno;
-        unlink(dst);
-        return e == ENOENT ? FQ_ENOENT : FQ_ERR;
-    }
-    return FQ_OK;
+    /* 이동은 언제나 rename(2) 한 번이다: 크래시 시점과 무관하게 파일은 src나 dst 한 곳에만 있다.
+     * (예전 link+unlink는 그 사이 크래시하면 두 곳에 남아 fq_take의 "정확히 한 번"을 깨뜨렸다.)
+     * "대상이 있으면 거부"는 Linux renameat2(RENAME_NOREPLACE)면 원자적이고, 그 밖(Cygwin, 미지원 FS)은
+     * 검사 후 rename이라 검사와 rename 사이에 dst를 만드는 쪽과는 경합한다 → dst는 호출자 소유여야 한다. */
+#if defined(__linux__) && defined(RENAME_NOREPLACE)
+    if (renameat2(AT_FDCWD, src, AT_FDCWD, dst, RENAME_NOREPLACE) == 0) return FQ_OK;
+    if (errno == EEXIST) return FQ_EEXIST;
+    if (errno == ENOENT) return FQ_ENOENT;
+    if (errno != EINVAL && errno != ENOSYS) return FQ_ERR;   /* 미지원이면 아래로 */
+#endif
+    struct stat st;
+    if (lstat(dst, &st) == 0) return FQ_EEXIST;
+    if (errno != ENOENT) return FQ_ERR;
+    return fq_fs_rename(src, dst);
 }
 
 int fq_fs_create_new(const char *path)

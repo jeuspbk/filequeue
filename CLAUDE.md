@@ -65,8 +65,9 @@ fq_fs_posix.c / fq_fs_win32.c   (플랫폼 원자 연산 추상화)
 - **발행**: `tmp/`에 기록+fsync → `incoming/`으로 원자적 rename → 디렉터리 fsync. (torn 파일 방지)
 - **소비**: `incoming/`→`inflight/` rename으로 CLAIM(경합 시 단 하나만 성공) → 처리 → unlink로 ACK.
   큐 내부 전이는 모두 `fq_fs_rename`(교체형, POSIX `rename`)이다. 대상 이름이 구조상 유일하기 때문.
-  `fq_fs_rename_noreplace`는 POSIX에서 link+unlink 두 단계라 경합 시 둘 다 성공할 수 있으므로
-  `fq_take`(호출자 경로로 내보내기)에만 쓴다.
+  `fq_fs_rename_noreplace`는 이동은 rename 한 번이지만 "대상 존재 시 거부"가 Cygwin 등에서는 검사 후
+  rename(비원자)이라 `fq_take`(호출자 소유 경로로 내보내기)에만 쓴다. link+unlink로 되돌리지 말 것 —
+  그 사이 크래시하면 메시지가 두 곳에 남아 트랜잭션 dequeue의 "정확히 한 번"이 깨진다.
 - **실패**: CLAIM~ACK 사이 크래시 시 파일이 `inflight/`에 남고, 새 리더가 `fq_recover_stale`로
   `incoming/`에 되돌림 → 재처리(중복 가능, 유실 없음). **소비자는 반드시 멱등**이어야 한다.
 

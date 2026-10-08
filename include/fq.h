@@ -124,8 +124,9 @@ int  fq_heartbeat(fq_queue *q);
  *           FQ_ENOENT = path가 없음(이미 넣었음).
  * fq_take : claim한 메시지 m을 큐에서 꺼내 path로 옮긴다(ack 대신). 성공하면 m은 해제되고
  *           path의 디렉터리를 fsync한다. 실패하면 m은 claim 상태 그대로(fq_nack 가능).
- *           POSIX에서는 link+unlink 두 단계라, 그 사이에 크래시하면 path와 inflight에 같은
- *           메시지가 남고 inflight 쪽은 나중에 복구되어 다시 전달된다(at-least-once 범위의 중복).
+ *           이동은 rename 한 번이라 크래시 시점과 무관하게 메시지는 inflight나 path 한 곳에만 있다.
+ *           path가 이미 있으면 FQ_EEXIST(덮어쓰지 않음). path는 호출자 소유의 새 이름이어야 한다:
+ *           Cygwin 등에서는 존재 검사와 rename 사이에 다른 쪽이 path를 만들면 덮어쓸 수 있다.
  * fq_return: fq_take로 꺼낸 파일을 fq_nack처럼 되돌린다. attempt = 꺼낼 때의 m->attempt;
  *           attempt+1로 incoming에 넣고, FQ_MAX_ATTEMPTS에 닿으면 dead/로 옮긴다.
  *           이름은 새로 붙는다(발행 시각 = 지금, stream_key 없음): 원래 순서와 파티션은 유지되지 않는다.
