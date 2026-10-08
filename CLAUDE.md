@@ -29,7 +29,8 @@ bash tests/test_concurrency.sh ./build/fq_producer.exe ./build/fq_consumer.exe
 **테스트가 2계층인 이유:** `ctest`에는 C 단위 테스트만 등록돼 있다. 동시성/failover 테스트는
 실제 프로세스를 띄우는 bash 스크립트이며, **cygwin ctest와 git-bash의 경로 표기 차이
 (`/cygdrive/d` vs `/d`)** 때문에 ctest 자동 실행이 불안정하여 수동 실행으로 분리했다.
-스크립트 자체는 정상 동작한다. `examples/`의 `fq_producer`/`fq_consumer`는 이 테스트의
+스크립트 자체는 정상 동작한다. 실패하면 작업 디렉터리(프로세스별 `*.err`, 큐 상태 `q*/`)를 지우지 않고
+경로를 출력한다 — 간헐 실패는 그 디렉터리부터 볼 것(통과하면 지운다). `examples/`의 `fq_producer`/`fq_consumer`는 이 테스트의
 드라이버 겸 사용 예제다. `FQ_LEASE_MS_OVERRIDE` 환경변수로 리스를 단축해 failover를 빠르게 검증한다.
 
 빌드 파일(CMakeLists.txt)은 플랫폼에 따라 FS 구현을 자동 선택한다:

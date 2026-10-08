@@ -15,7 +15,12 @@ CONSUMER="${2:?consumer 경로 필요}"
 ELECTION="${3:-${CONSUMER/fq_consumer/test_election}}"
 
 WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
+# 실패하면 작업 디렉터리(프로세스별 로그·큐 상태)를 남겨 원인을 볼 수 있게 한다. 통과하면 지운다.
+cleanup() {
+  if [ "${fails:-0}" -eq 0 ]; then rm -rf "$WORK"
+  else echo "  [INFO] 실패 분석용 작업 디렉터리 보존: $WORK (*.err = 프로세스별 출력, q*/ = 큐 상태)"; fi
+}
+trap cleanup EXIT
 fails=0
 pass() { echo "  [PASS] $1"; }
 fail() { echo "  [FAIL] $1"; fails=$((fails+1)); }
