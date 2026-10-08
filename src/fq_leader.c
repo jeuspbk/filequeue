@@ -134,14 +134,22 @@ static int token_high_water(fq_queue *q, uint64_t cur_token, uint64_t *out)
     return FQ_OK;
 }
 
-int fq_acquire_leadership(fq_queue *q, fq_lease *lease)
+/* 양보해야 할 남의 리스인가. same_node(fq_takeover)면 같은 node_id의 다른 instance도 내 것으로 본다:
+ * 호출자가 그 핸들이 죽었음을 보증하므로 만료를 기다리지 않는다. */
+static int is_other(const fq_queue *q, const leader_info *li, int same_node)
+{
+    if (!li->id[0] || is_mine(q, li)) return 0;
+    return !(same_node && strcmp(li->id, q->node_id) == 0);
+}
+
+int fq_acquire_lease(fq_queue *q, fq_lease *lease, int same_node)
 {
     char ctrl[1280];
     fq_path(ctrl, sizeof(ctrl), q->root, FQ_DIR_CONTROL, NULL);
 
     leader_info cur;
     if (read_leader_info(q, &cur) != FQ_OK) return FQ_ERR;
-    int other = cur.id[0] && !is_mine(q, &cur);
+    int other = is_other(q, &cur, same_node);
 
     /* 폴링 부하 절감: 대기 노드는 짧은 주기로 여기를 반복한다. 매번 fq_fs_now_ms(파일 생성+stat+삭제)를
      * 하면 공유 스토리지에 초당 수십 번 메타데이터 쓰기가 생긴다. 추정 FS 시각으로도 리스가 유효하면
@@ -160,6 +168,7 @@ int fq_acquire_leadership(fq_queue *q, fq_lease *lease)
     /* 인수 시도: election.lock 을 배타 생성으로 획득 (직렬화) */
     char lock_path[1280];
     int rc = election_lock(q, now, lock_path, sizeof(lock_path));
+    if (rc == FQ_ELOCKED) return FQ_EEXIST;      /* 선출·하트비트가 락을 잡고 있음 */
     if (rc != FQ_OK) return rc;
 
     /* 임계 구역. 락 밖에서 읽은 값은 낡았을 수 있다: 두 노드가 같은 만료 상태를 읽고 차례로
@@ -172,7 +181,7 @@ int fq_acquire_leadership(fq_queue *q, fq_lease *lease)
         fq_fs_unlink(lock_path);
         return FQ_ERR;
     }
-    if (cur.expiry > now && cur.id[0] && !is_mine(q, &cur)) {
+    if (cur.expiry > now && is_other(q, &cur, same_node)) {
         fq_fs_unlink(lock_path);
         return FQ_ELOCKED;                       /* 그 사이 다른 노드가 인수함 */
     }
@@ -189,6 +198,12 @@ int fq_acquire_leadership(fq_queue *q, fq_lease *lease)
     lease->token = new_token;
     lease->lease_expiry_ms = expiry;
     return FQ_OK;
+}
+
+int fq_acquire_leadership(fq_queue *q, fq_lease *lease)
+{
+    int rc = fq_acquire_lease(q, lease, 0);
+    return rc == FQ_EEXIST ? FQ_ELOCKED : rc;
 }
 
 int fq_renew_lease(fq_queue *q, fq_lease *lease)

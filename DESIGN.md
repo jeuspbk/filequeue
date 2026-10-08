@@ -143,6 +143,9 @@ inflight/<이름>.msg[.a<attempt>]__t<token>    # claim 시 리더 token을 stam
     node_id가 같은 두 프로세스(컨테이너마다 pid 1이라 `node-1`, 이미지에 박힌 `FQ_NODE_ID`)가 서로의
     유효한 리스를 자기 것으로 보고 계속 빼앗는다 — 오류 없이 사실상 Active-Active가 된다.
     같은 id라도 instance가 다르면 다른 리더로 본다(재시작한 노드는 옛 리스 만료를 기다린다).
+    예외는 `fq_takeover`: 호출자가 같은 node_id의 이전 핸들이 죽었음을 보증하면(감시 프로세스가 waitpid로 거둔 뒤
+    재기동) 그 리스를 만료 전에 인수한다. 경로는 평소 인수와 같다(election.lock 안 재검증, token = 최대 + 1,
+    선임자 inflight 회수). 보증이 틀려도 fencing 덕에 유실은 없고 중복만 생길 수 있다.
     옛 3필드 포맷도 읽으며 그때 instance는 빈 값이다. 기본 node_id는 `<호스트명>-<pid>`.
 - 리더는 주기적으로 `leader.info`를 다시 써서(tmp + 원자 교체) `lease_expiry`를 연장한다(하트비트).
   별도 heartbeat 파일은 없다. **하트비트도 `election.lock` 안에서 읽고-확인하고-쓴다.** 락 없이 쓰면,
@@ -266,6 +269,7 @@ int  fq_publish(fq_queue *q, const void *data, size_t len, const char *stream_ke
 /* Consumer: 통합 wrapper (리더십·하트비트·stale 복구 자동) */
 int  fq_consume(fq_queue *q, fq_msg **out);   /* FQ_OK / FQ_EEMPTY / FQ_ELOCKED(대기) */
 int  fq_heartbeat(fq_queue *q);               /* 긴 처리 중 리스 연장 */
+int  fq_takeover(fq_queue *q);                /* 같은 node_id의 죽은 핸들 리스를 즉시 인수 */
 int  fq_ack(fq_queue *q, fq_msg *m);          /* inflight unlink. FQ_ENOENT = 이미 회수됨(재전달 예정) */
 int  fq_nack(fq_queue *q, fq_msg *m);         /* 즉시 requeue (attempt+1, 한도면 dead/) */
 

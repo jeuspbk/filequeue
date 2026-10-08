@@ -85,7 +85,8 @@ fq_fs_posix.c / fq_fs_win32.c   (플랫폼 원자 연산 추상화)
   `control/election.lock`을 원자적 배타 생성(`fq_fs_create_new`)으로 직렬화한 뒤, **락 안에서
   leader.info를 다시 읽어 재검증**하고 token = max(leader.info, inflight의 최대 token) + 1로 인수.
   "내 리스" 판정은 node_id **와** instance(핸들 nonce)로 한다 — node_id만 보면 id가 같은 두 프로세스가
-  서로 빼앗는다. **하트비트(`fq_renew_lease`)도 같은 락 안에서** 읽고-확인하고-쓴다(락 밖에서 쓰면
+  서로 빼앗는다. 예외는 `fq_takeover`(호출자가 같은 node_id의 이전 핸들이 죽었음을 보증)뿐이며, 이것도
+  `fq_acquire_lease(.., same_node=1)`로 평소 인수와 같은 락·재검증·token 경로를 탄다. **하트비트(`fq_renew_lease`)도 같은 락 안에서** 읽고-확인하고-쓴다(락 밖에서 쓰면
   멈췄던 옛 리더가 새 리더를 옛 token으로 덮어써 token이 되돌아간다). 락이 잡혀 있으면 `FQ_ELOCKED`.
   그래서 stale 락 회수 임계는 `fq_election_stale_ms()`(= min(30초, 리스/3))로 읽는다 — 리스보다 길면
   락을 쥔 채 죽은 노드가 리더까지 멈춘다. 정상 종료는 `fq_close`/`fq_release_leadership`으로 반납.

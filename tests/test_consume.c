@@ -7,6 +7,7 @@
  *   4) fq_heartbeat: 리더는 즉시 갱신(FQ_OK), 비리더는 FQ_ELOCKED.
  *   5) 리스 자체 만료 감지: 마지막 갱신 뒤 리스 길이가 지나면 내려놓고 다시 얻는다(token +1).
  *   6) 하트비트마다 stale inflight 회수: 옛 token의 inflight가 failover 없이도 되살아난다.
+ *   7) fq_takeover: 같은 node_id의 죽은 핸들 리스를 만료 전에 인수, 다른 node_id 리스는 그대로.
  */
 #include "fq.h"
 #include "fq_fs.h"
@@ -105,6 +106,34 @@ int main(int argc, char **argv)
         CHECK(rc == FQ_OK && m && m->len == 6 && memcmp(m->data, "zombie", 6) == 0,
               "failover 없이 하트비트에서 회수되어 소비됨");
         if (rc == FQ_OK) { CHECK(m->attempt == 1, "회수 시 attempt +1"); fq_ack(qa, m); }
+    }
+
+    printf("[6] fq_takeover: 같은 node_id의 죽은 핸들 리스를 즉시 인수\n");
+    {
+        /* qa가 리더로 메시지를 claim한 채 "죽었다"(닫지 않고 버림). 같은 node_id로 새 핸들을 연다. */
+        CHECK(fq_publish(qa, "tk", 2, NULL) == FQ_OK, "publish");
+        fq_msg *held = NULL;
+        CHECK(fq_consume(qa, &held) == FQ_OK && held, "qa가 claim (inflight에 남음)");
+        uint64_t old_token = qa->lead_lease.token;
+
+        fq_queue *qa2 = NULL, *qc = NULL;
+        CHECK(fq_open(root, "nodeA", &qa2) == FQ_OK && qa2, "같은 node_id로 새 핸들");
+        CHECK(fq_open(root, "nodeC", &qc) == FQ_OK && qc, "다른 node_id 핸들");
+        fq_msg *m = NULL;
+        CHECK(qa2 && fq_consume(qa2, &m) == FQ_ELOCKED, "takeover 전: 리스가 유효해 대기");
+        CHECK(qc && fq_takeover(qc) == FQ_ELOCKED, "다른 node_id의 takeover: 유효한 리스는 건드리지 않음");
+        CHECK(qa2 && fq_takeover(qa2) == FQ_OK, "같은 node_id의 takeover: 즉시 인수");
+        CHECK(qa2 && qa2->lead_lease.token > old_token, "token 증가 (fencing)");
+        CHECK(qa2 && fq_takeover(qa2) == FQ_OK, "다시 호출해도 FQ_OK (이미 리더)");
+        int rc = qa2 ? fq_consume(qa2, &m) : FQ_ERR;
+        CHECK(rc == FQ_OK && m && m->len == 2 && memcmp(m->data, "tk", 2) == 0 && m->attempt == 1,
+              "선임자의 inflight가 회수되어 바로 소비됨 (attempt +1)");
+        if (rc == FQ_OK) fq_ack(qa2, m);
+        CHECK(qa2 && fq_consume(qa2, &m) == FQ_EEMPTY, "그 뒤 큐는 빔 (중복 없음)");
+        CHECK(fq_heartbeat(qa) == FQ_ELOCKED, "옛 핸들의 하트비트: 리더십 상실");
+        if (held) CHECK(fq_ack(qa, held) == FQ_ENOENT, "옛 핸들의 ack: 이미 회수됨");
+        if (qc) fq_close(qc);
+        if (qa2) fq_close(qa2);
     }
 
     fq_close(qa);

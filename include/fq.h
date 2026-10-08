@@ -117,6 +117,18 @@ int  fq_release(fq_queue *q, fq_msg *m);   /* 실패하면 m은 남는다: 처�
 int  fq_consume(fq_queue *q, fq_msg **out);
 /* fq_consume과 같되 fq_claim_if로 고른다. */
 int  fq_consume_if(fq_queue *q, fq_want_fn want, void *ud, fq_msg **out);
+/* fq_takeover: 같은 node_id로 연 이전 핸들이 죽었음을 호출자가 보증할 때, 그 리스를 만료(FQ_LEASE_MS)를
+ * 기다리지 않고 이 핸들이 넘겨받는다. 예: 감시 프로세스가 죽은 소비자를 waitpid로 거둔 뒤 재기동한
+ * 소비자가 fq_open 직후 한 번 호출. 이후 fq_consume/fq_consume_if는 바로 claim한다.
+ *   - leader.info가 같은 node_id(어느 instance든)의 리스면 즉시 인수(token = 최대 token + 1).
+ *     선임자의 inflight는 평소 인수와 같이 fq_recover_stale 규칙으로 회수된다(attempt+1).
+ *   - 리스가 없거나 만료됐으면 평소처럼 얻는다. 이미 이 핸들이 리더면 FQ_OK.
+ *   - 다른 node_id의 유효한 리스면 건드리지 않는다.
+ * 보증이 틀려 이전 핸들이 살아 있었다면 그 핸들은 다음 하트비트에 리더십을 잃는다(FQ_ELOCKED). 그 사이
+ * 옛 token으로 claim한 것은 fencing으로 회수되므로 유실은 없지만 중복 전달될 수 있다.
+ * 반환: FQ_OK = 이 핸들이 리더, FQ_ELOCKED = 다른 node_id가 리더(또는 선출 락이 잡혀 있음 → 잠시 후
+ * 재시도), FQ_ERR = 오류. */
+int  fq_takeover(fq_queue *q);
 /* fq_consume 사용자용 하트비트. 메시지 하나를 처리하는 데 리스(FQ_LEASE_MS)보다 오래 걸릴 수
  * 있으면 처리 도중 주기적으로 호출해 리스를 연장한다(즉시 갱신, 주기 무시).
  * FQ_OK = 연장됨, FQ_ELOCKED = 리더가 아님(리더십을 잃었거나 아직 없음),

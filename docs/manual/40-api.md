@@ -111,6 +111,7 @@ typedef int (*fq_want_fn)(const void *data, size_t len, void *ud);
 |---|---|---|
 | `fq_consume` | `int fq_consume(fq_queue *q, fq_msg **out)` | 리더십 획득/유지·`recover_stale`·하트비트·`claim`을 자동 처리하고 다음 메시지를 반환. 식별자는 `q->node_id` 사용. |
 | `fq_consume_if` | `int fq_consume_if(fq_queue *q, fq_want_fn want, void *ud, fq_msg **out)` | `fq_consume`과 같되 `fq_claim_if`로 고른다. |
+| `fq_takeover` | `int fq_takeover(fq_queue *q)` | 같은 node_id로 연 이전 핸들이 죽었음을 호출자가 보증할 때, 그 리스를 만료를 기다리지 않고 넘겨받는다(재기동 직후 한 번). 이후 `fq_consume`/`fq_consume_if`가 바로 claim한다. 선임자의 inflight는 회수된다(attempt+1). 다른 node_id의 유효한 리스는 건드리지 않는다. `FQ_OK` 이 핸들이 리더, `FQ_ELOCKED` 다른 노드가 리더 또는 선출 락이 잡혀 있음(잠시 후 재시도), `FQ_ERR` 오류. |
 | `fq_heartbeat` | `int fq_heartbeat(fq_queue *q)` | `fq_consume` 사용자용 하트비트. 주기와 무관하게 즉시 리스를 연장하고 stale inflight를 회수한다. `FQ_OK` 연장됨, `FQ_ELOCKED` 리더가 아님, `FQ_ERR` 오류 또는 선출 락이 잠시 잡혀 있음(리더십 유지, 다시 호출). |
 
 반환값:

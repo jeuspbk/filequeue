@@ -87,6 +87,11 @@ void fq_parse_attempt(const char *name, char *base_out, size_t base_n, uint32_t 
 /* inflight 이름 "<logical>__t<token>" 에서 token을 파싱. 실패 시 0 반환, logical_out 채움. */
 uint64_t fq_parse_inflight(const char *name, char *logical_out, size_t logical_n);
 
+/* ---- 리스 인수 (fq_leader.c) ----
+ * fq_acquire_leadership과 같되 election.lock이 잡혀 있으면 FQ_EEXIST(남의 유효한 리스는 FQ_ELOCKED).
+ * same_node면 같은 node_id의 다른 instance가 쓴 리스도 만료를 기다리지 않고 인수한다(fq_takeover). */
+int      fq_acquire_lease(fq_queue *q, fq_lease *lease, int same_node);
+
 /* ---- 실패한 inflight 재큐잉 (fq_queue.c) ----
  * inflight/<name>을 실패한 시도 한 번으로 처리: attempt+1로 incoming/<base>.a<N>, 한도에 닿으면
  * dead/<logical>. nack·stale 회수·claim 뒤 읽기 실패가 같은 규칙을 쓴다. *to_dead에 dead 여부. */

@@ -40,6 +40,15 @@ static int heartbeat_now(fq_queue *q, uint64_t now)
     return FQ_OK;
 }
 
+/* 리스를 얻은 직후: fq_consume이 쓰는 상태로 만들고 선임자의 inflight를 회수한다. */
+static void took_lease(fq_queue *q, uint64_t now)
+{
+    q->lead_held = 1;
+    q->lead_last_renew_ms = now;
+    q->lead_next_renew_ms = now + renew_interval_ms();
+    fq_recover_stale(q, &q->lead_lease);        /* 인수 직후 1회 회수 */
+}
+
 /* 리더십 획득·갱신. FQ_OK면 claim해도 된다. */
 static int lead(fq_queue *q)
 {
@@ -59,11 +68,7 @@ static int lead(fq_queue *q)
         int rc = fq_acquire_leadership(q, &q->lead_lease);
         if (rc == FQ_ELOCKED) return FQ_ELOCKED;   /* 다른 노드가 활성 리더 */
         if (rc != FQ_OK)      return FQ_ERR;
-
-        q->lead_held = 1;
-        q->lead_last_renew_ms = now;
-        q->lead_next_renew_ms = now + renew_interval_ms();
-        fq_recover_stale(q, &q->lead_lease);        /* 인수 직후 1회 회수 */
+        took_lease(q, now);
     } else if (now >= q->lead_next_renew_ms) {
         int rc = heartbeat_now(q, now);
         if (rc == FQ_EEXIST || rc == FQ_ERR) {
@@ -84,6 +89,25 @@ int fq_heartbeat(fq_queue *q)
     if (!q->lead_held) return FQ_ELOCKED;
     int rc = heartbeat_now(q, fq_now_mono_ms());
     return rc == FQ_EEXIST ? FQ_ERR : rc;    /* 일시적: 리더십은 유지, 다시 호출하면 된다 */
+}
+
+int fq_takeover(fq_queue *q)
+{
+    uint64_t now = fq_now_mono_ms();
+    if (q->lead_held && now < q->lead_last_renew_ms + fq_lease_ms())
+        return FQ_OK;                            /* 이미 이 핸들이 리더 */
+    q->lead_held = 0;
+    /* election.lock은 정상 선출·하트비트 동안 잠깐만 잡힌다 → 짧게 재시도. 죽은 선임자가 쥔 채 남긴
+     * 락이면 stale 회수(fq_election_stale_ms) 전까지 FQ_ELOCKED다. */
+    int rc = fq_acquire_lease(q, &q->lead_lease, 1);
+    for (int i = 0; rc == FQ_EEXIST && i < HEARTBEAT_LOCK_RETRIES; i++) {
+        fq_sleep_ms(10);
+        rc = fq_acquire_lease(q, &q->lead_lease, 1);
+    }
+    if (rc == FQ_EEXIST || rc == FQ_ELOCKED) return FQ_ELOCKED;
+    if (rc != FQ_OK) return FQ_ERR;
+    took_lease(q, fq_now_mono_ms());
+    return FQ_OK;
 }
 
 int fq_consume(fq_queue *q, fq_msg **out)
