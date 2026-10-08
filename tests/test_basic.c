@@ -129,6 +129,20 @@ int main(int argc, char **argv)
         CHECK(fq_publish(q, "x", 1, "a b") == FQ_EINVAL, "공백 stream_key 거부");
         CHECK(fq_publish(q, "x", 1, "p__t1") == FQ_EINVAL, "\"__\" 포함 stream_key 거부");
         CHECK(fq_publish(q, "x", 1, "order-42.v2") == FQ_OK, "정상 stream_key 허용");
+        {   /* 63자 node_id + 123자 stream: 이름은 252자로 incoming에 들어가지만 claim 접미사(__t<token>)를
+             * 붙이면 255자를 넘어 claim이 매번 FQ_ERR로 큐 맨 앞을 막았다 → 발행 때 거절 */
+            fq_queue *ql = NULL;
+            char nid[64], sk[128];
+            memset(nid, 'n', 63); nid[63] = '\0';
+            memset(sk, 's', 123); sk[123] = '\0';
+            if (fq_open(root, nid, &ql) == FQ_OK) {
+                CHECK(fq_publish(ql, "x", 1, sk) == FQ_EINVAL, "claim 접미사를 못 붙일 긴 이름 거부");
+                fq_order head = { FQ_ORDER_HEAD, NULL, NULL };
+                sk[97] = '\0';                                  /* 합 160자: 맨 앞(HEAD)이어도 받는다 */
+                CHECK(fq_publish_ex(ql, "x", 1, sk, &head) != FQ_EINVAL, "합 160자 이름 허용");
+                fq_close(ql);
+            }
+        }
         /* 다음 실행을 위해 방금 발행한 것을 비운다. [4]에서 nodeB가 리스를 쥐고 있으므로 먼저 만료시킨다. */
         char li[1408];
         fq_path(li, sizeof(li), root, FQ_LEADER_INFO, NULL);
@@ -136,7 +150,7 @@ int main(int argc, char **argv)
         fq_lease l3;
         if (fq_acquire_leadership(q, &l3) == FQ_OK) {
             fq_msg *m = NULL;
-            if (fq_claim(q, &l3, &m) == FQ_OK) fq_ack(q, m);   /* 다음 실행을 위해 비움 */
+            while (fq_claim(q, &l3, &m) == FQ_OK) fq_ack(q, m);   /* 다음 실행을 위해 비움 */
         }
     }
 

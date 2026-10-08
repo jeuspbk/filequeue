@@ -17,6 +17,11 @@ static fq_msg *new_msg(fq_queue *q, const char *inf_name, void *data, size_t len
  * 잘리지 않고 들어가야 한다. snprintf가 조용히 잘라 엉뚱한 경로를 쓰는 일을 막는다. */
 #define FQ_ROOT_MAX 900
 
+/* incoming 메시지명의 최대 길이. 이 이름에 ".a<N>"(재시도)와 "__t<token>"(claim, token 최대 20자리)이
+ * 붙어도 파일명 한도 255자 안이어야 한다. 넘는 이름을 받아 두면 claim의 rename이 매번 실패해(FQ_ERR)
+ * 그 메시지가 큐 맨 앞을 영원히 막는다. 그래서 발행 때 FQ_EINVAL로 거절한다. */
+#define FQ_MSG_NAME_MAX (255 - 4 /* .a<NN> */ - 23 /* __t<20자리> */)
+
 int fq_open(const char *root, const char *node_id, fq_queue **out)
 {
     if (!root || !root[0] || !out || strlen(root) > FQ_ROOT_MAX) return FQ_EINVAL;
@@ -119,13 +124,14 @@ static void new_msg_name(fq_queue *q, const char *id, const char *stream_key, ch
 static int ordered_name(fq_queue *q, const char *id, const char *stream_key, const fq_order *o,
                         char *name, size_t n);
 
-/* incoming/ 안의 새 메시지 경로. 순서 지정(o)이면 대상을 못 찾을 때 FQ_ENOENT 등. */
+/* incoming/ 안의 새 메시지 경로. 순서 지정(o)의 대상이 없으면 FQ_EEMPTY, 이름이 너무 길면 FQ_EINVAL. */
 static int incoming_path(fq_queue *q, const char *id, const char *stream_key, const fq_order *o,
                          char *msg_path, size_t n)
 {
     char msg_name[512];
     int rc = ordered_name(q, id, stream_key, o, msg_name, sizeof(msg_name));
     if (rc != FQ_OK) return rc;
+    if (strlen(msg_name) > FQ_MSG_NAME_MAX) return FQ_EINVAL;
     fq_path(msg_path, n, q->root, FQ_DIR_INCOMING, msg_name);
     return FQ_OK;
 }
