@@ -41,7 +41,7 @@ int  fq_fs_create_new(const char *path);
 int  fq_fs_unlink(const char *path);     /* 없으면 FQ_ENOENT */
 int  fq_fs_exists(const char *path);     /* 1=있음, 0=없음, <0=오류 */
 
-/* 파일 전체를 malloc 버퍼로 읽음 (호출자가 free). */
+/* 파일 전체를 malloc 버퍼로 읽음 (호출자가 free). 일반 파일이 아니면(디렉터리 등) FQ_ERR. */
 int  fq_fs_read_file(const char *path, void **out, size_t *out_len);
 
 /* 디렉터리 메타데이터 영속화. 미지원 플랫폼에서는 no-op.

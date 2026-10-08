@@ -260,6 +260,59 @@ int main(int argc, char **argv)
         }
     }
 
+    /* [12] poison·고아: 읽을 수 없는 항목은 DLQ로, ack 없이 버린 메시지는 다시 전달, 들고 있는 것은 그대로 */
+    printf("[12] poison 항목과 고아 inflight\n");
+    {
+        char pr[1100], li[1408], bad[1408], dead_bad[1408];
+        snprintf(pr, sizeof(pr), "%s-poison", root);
+        fq_queue *pq = NULL;
+        CHECK(fq_open(pr, "pz", &pq) == FQ_OK, "open");
+        if (pq) {
+            fq_path(li, sizeof(li), pr, FQ_LEADER_INFO, NULL);
+            fq_fs_write_sync(li, "none 0 0\n", 9);
+            fq_msg *m = NULL;
+            while (fq_consume(pq, &m) == FQ_OK) fq_ack(pq, m);          /* 재실행 대비 비움 */
+
+            /* (a) incoming의 디렉터리(가장 오래된 이름): 빈 메시지로 전달되면 안 되고, 시도가 쌓여 dead/로 */
+            const char *bn = "0000000000000001-0000000001-x-bad.msg";
+            fq_path(bad, sizeof(bad), pr, FQ_DIR_INCOMING, bn);
+            fq_fs_mkdirs(bad);
+            fq_publish(pq, "p1", 2, NULL);
+            fq_publish(pq, "p2", 2, NULL);
+            int got = 0, empty_msg = 0;
+            for (int i = 0; i < 30; i++) {
+                m = NULL;
+                if (fq_consume(pq, &m) == FQ_OK) { got++; if (m->len == 0) empty_msg++; fq_ack(pq, m); }
+            }
+            snprintf(dead_bad, sizeof(dead_bad), "%s/%s/%s.a%d", pr, FQ_DIR_DEAD, bn, FQ_MAX_ATTEMPTS - 1);
+            CHECK(got == 2 && empty_msg == 0, "정상 메시지 2건만 전달 (디렉터리는 빈 메시지로 안 나감)");
+            CHECK(fq_fs_exists(dead_bad) == 1, "읽을 수 없는 항목은 시도가 쌓여 dead/로 격리");
+
+            /* (b) ack 없이 free한 메시지 = 고아 → 다음 하트비트에 다시 전달 */
+            fq_publish(pq, "orph", 4, NULL);
+            m = NULL;
+            CHECK(fq_consume(pq, &m) == FQ_OK && m, "claim");
+            fq_msg_free(m);                                        /* ack/nack 없이 버림 */
+            pq->lead_next_renew_ms = 0;                            /* 하트비트 → recover_stale */
+            m = NULL;
+            CHECK(fq_consume(pq, &m) == FQ_OK && m && m->len == 4 && memcmp(m->data, "orph", 4) == 0 &&
+                  m->attempt == 1, "고아가 회수되어 다시 전달 (attempt 1)");
+            if (m) fq_ack(pq, m);
+
+            /* (c) 들고 있는 메시지는 하트비트가 회수하지 않는다 */
+            fq_publish(pq, "held", 4, NULL);
+            fq_msg *h = NULL;
+            CHECK(fq_consume(pq, &h) == FQ_OK && h, "claim 후 들고 있음");
+            pq->lead_next_renew_ms = 0;
+            m = NULL;
+            CHECK(fq_consume(pq, &m) == FQ_EEMPTY, "하트비트 후에도 들고 있는 메시지는 재전달 안 됨");
+            CHECK(h && fq_ack(pq, h) == FQ_OK, "들고 있던 메시지 ack 성공 (회수되지 않았음)");
+
+            fq_close(pq);
+            remove(dead_bad);                                     /* 다음 실행 대비 (빈 디렉터리) */
+        }
+    }
+
     /* [10] fq_open 인자 검증: root NULL·과도한 길이는 EINVAL (경로가 조용히 잘리지 않게) */
     printf("[10] fq_open 인자 검증\n");
     {

@@ -41,6 +41,13 @@ struct fq_queue {
     size_t   claim_idx;
     size_t   claim_cap;
 
+    /* 이 핸들이 claim해서 아직 들고 있는(ack/nack/release/take/free 전) 메시지.
+     * fq_recover_stale이 "내 token인데 아무도 들고 있지 않은" inflight(ack·nack 실패, 그냥 free한 것)를
+     * 고아로 회수하는 데 쓴다. 내 token은 원래 회수 대상이 아니라서 없으면 리더가 바뀔 때까지 멈춘다. */
+    fq_msg **held;
+    size_t   held_n;
+    size_t   held_cap;
+
     /* fq_consume() 통합 wrapper 상태 */
     int      lead_held;            /* 현재 리더십 보유 여부 */
     fq_lease lead_lease;           /* 보유 중인 리스 */
@@ -79,6 +86,13 @@ void fq_parse_attempt(const char *name, char *base_out, size_t base_n, uint32_t 
 
 /* inflight 이름 "<logical>__t<token>" 에서 token을 파싱. 실패 시 0 반환, logical_out 채움. */
 uint64_t fq_parse_inflight(const char *name, char *logical_out, size_t logical_n);
+
+/* ---- 실패한 inflight 재큐잉 (fq_queue.c) ----
+ * inflight/<name>을 실패한 시도 한 번으로 처리: attempt+1로 incoming/<base>.a<N>, 한도에 닿으면
+ * dead/<logical>. nack·stale 회수·claim 뒤 읽기 실패가 같은 규칙을 쓴다. *to_dead에 dead 여부. */
+int      fq_requeue_inflight(fq_queue *q, const char *inflight_name, int *to_dead);
+/* 이 핸들이 들고 있는 메시지인가 (inflight 이름 비교) */
+int      fq_is_held(const fq_queue *q, const char *inflight_name);
 
 /* ---- FS 시각 추정 (fq_queue.c) ----
  * 로컬 벽시계 + (FS 시각 - 벽시계) 오프셋. 오프셋은 FQ_CLOCK_SYNC_MS마다 fq_fs_now_ms로 다시 잰다.

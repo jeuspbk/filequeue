@@ -121,7 +121,11 @@ fq_fs_posix.c / fq_fs_win32.c   (플랫폼 원자 연산 추상화)
 - 공유 디렉터리(`tmp/`, `control/`)에 만드는 임시 파일 이름에는 반드시 `node_id`를 넣을 것(`fq_fs_now_ms`도
   tag 인자로 받는다). `fq_gen_id`는 pid+salt+카운터+ms 조합이라 노드 간 유일성이 확률적이다(카운터는
   원자적이라 프로세스 안에서는 스레드 간에도 유일). 메시지 이름은 이미 producer를 포함한다.
-- claim 뒤 읽기나 할당이 실패하면 반드시 `incoming/`으로 되돌린다. 내 token이 찍힌 inflight는 복구 대상이
-  아니라서 되돌리지 않으면 내가 죽을 때까지 멈춘다.
+- claim 뒤 **읽기** 실패는 그 메시지의 실패한 시도로 친다(`fq_requeue_inflight`: attempt+1, 한도면 dead/).
+  원래 이름으로 되돌리면 영원히 DLQ로 가지 않고 맨 앞에서 큐를 막는다. **할당** 실패는 메시지 탓이 아니니
+  원래 자리로 되돌린다. nack·stale 회수·읽기 실패는 모두 `fq_requeue_inflight` 하나를 쓴다.
+- 핸들은 들고 있는 메시지를 추적한다(`q->held`, `fq_msg.owner`). `fq_recover_stale`은 옛 token뿐 아니라
+  "내 token인데 들고 있지 않은" 고아(ack·nack 실패, ack 없이 free)도 회수한다 — 내 token은 원래 회수
+  대상이 아니라서 없으면 리더가 바뀔 때까지 멈춘다. 그러므로 lease는 그것을 얻은 핸들로만 claim할 것.
 - 대상 스토리지가 바뀌면 `test_atomicity`를 그 스토리지에서 먼저 돌려 rename/create/lock 원자성을
   확인할 것. 이 전제가 깨지면 큐 정확성이 보장되지 않는다 (`DESIGN.md` §0).

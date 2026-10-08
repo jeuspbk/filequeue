@@ -264,30 +264,17 @@ static int recover_cb(const char *name, void *ud)
     char logical[640];
     uint64_t token = fq_parse_inflight(name, logical, sizeof(logical));
 
-    /* 현재 리더 token 이상은 살아있는(내) inflight → 건너뜀 */
-    if (token >= c->lease->token) return 0;
+    /* 더 새 token = 나보다 새 리더의 것(내가 좀비) → 건드리지 않음 */
+    if (token > c->lease->token) return 0;
+    /* 내 token이고 이 핸들이 들고 있음 = 처리 중 → 건드리지 않음.
+     * 내 token인데 아무도 들고 있지 않으면 고아다(ack·nack 실패, ack 없이 free). 회수하지 않으면 리더가
+     * 바뀔 때까지 멈춘다. 그래서 lease는 그것을 얻은 핸들로만 claim해야 한다(fq.h). */
+    if (token == c->lease->token && fq_is_held(c->q, name)) return 0;
 
-    /* 죽은 선임자의 것 → 회수 */
-    char base[512];
-    uint32_t attempt = 0;
-    fq_parse_attempt(logical, base, sizeof(base), &attempt);
-
-    char src[1408];
-    fq_path(src, sizeof(src), c->q->root, FQ_DIR_INFLIGHT, name);
-
-    int rc;
-    if (attempt + 1 >= FQ_MAX_ATTEMPTS) {
-        char dst[1408];
-        fq_path(dst, sizeof(dst), c->q->root, FQ_DIR_DEAD, logical);
-        rc = fq_fs_rename(src, dst);
-        if (rc == FQ_OK) c->dead++;
-    } else {
-        char req[640], dst[1408];
-        snprintf(req, sizeof(req), "%s.a%u", base, attempt + 1);
-        fq_path(dst, sizeof(dst), c->q->root, FQ_DIR_INCOMING, req);
-        rc = fq_fs_rename(src, dst);
-        if (rc == FQ_OK) c->recovered++;
-    }
+    /* 죽은 선임자·좀비의 것, 또는 내 고아 → 실패한 시도 한 번으로 회수 */
+    int dead = 0;
+    int rc = fq_requeue_inflight(c->q, name, &dead);
+    if (rc == FQ_OK) { if (dead) c->dead++; else c->recovered++; }
     if (rc != FQ_OK && rc != FQ_ENOENT) c->err = rc;
     return 0;
 }

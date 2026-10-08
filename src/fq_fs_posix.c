@@ -139,6 +139,9 @@ int fq_fs_read_file(const char *path, void **out, size_t *out_len)
 
     struct stat st;
     if (fstat(fd, &st) != 0) { close(fd); return FQ_ERR; }
+    /* 일반 파일만: 디렉터리를 열면 크기 0으로 읽혀 빈 메시지로 전달되고, ack(unlink)는 실패해
+     * inflight에 영구히 남는다. (Win32는 CreateFile이 디렉터리를 열지 않으므로 이미 실패한다.) */
+    if (!S_ISREG(st.st_mode)) { close(fd); return FQ_ERR; }
     size_t len = (size_t)st.st_size;
     char *buf = (char *)malloc(len ? len : 1);
     if (!buf) { close(fd); return FQ_ERR; }

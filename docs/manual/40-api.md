@@ -80,11 +80,11 @@ typedef struct {
 | `fq_acquire_leadership` | `int fq_acquire_leadership(fq_queue *q, fq_lease *lease)` | 리더십 획득 시도(식별자는 `q->node_id` 사용). 유효한 다른 리더가 있으면 `FQ_ELOCKED`. 성공 시 `lease`에 새 token 발급. |
 | `fq_renew_lease` | `int fq_renew_lease(fq_queue *q, fq_lease *lease)` | 하트비트. `election.lock` 안에서 여전히 내가 리더인지 확인하고 만료시각 연장. 아니면 `FQ_ENOLEADER`. 선출이 진행 중이라 락이 잡혀 있으면 `FQ_ELOCKED`(리더십은 유지될 수 있음 → 잠시 후 재시도). |
 | `fq_recover_stale` | `int fq_recover_stale(fq_queue *q, const fq_lease *lease)` | 옛 token의 inflight(죽은 선임자·좀비 것)를 `incoming/`으로 회수(attempt+1, 한도 초과 시 `dead/`). 인수 직후와 **매 하트비트마다** 호출. |
-| `fq_claim` | `int fq_claim(fq_queue *q, const fq_lease *lease, fq_msg **out)` | 가장 오래된 메시지를 점유. 비었으면 `FQ_EEMPTY`. |
+| `fq_claim` | `int fq_claim(fq_queue *q, const fq_lease *lease, fq_msg **out)` | 가장 오래된 메시지를 점유. 비었으면 `FQ_EEMPTY`. 읽을 수 없는 메시지(권한·I/O 오류, 일반 파일이 아닌 항목)는 실패한 시도로 쳐서(attempt+1, 한도면 `dead/`) 건너뛴다. |
 | `fq_ack` | `int fq_ack(fq_queue *q, fq_msg *m)` | 처리 완료. inflight 삭제 + `m` 해제. `FQ_ENOENT` = 파일이 이미 없음(리스를 놓친 사이 회수됨 → 이 메시지는 다시 전달된다. 멱등 소비자면 무해). |
 | `fq_release_leadership` | `int fq_release_leadership(fq_queue *q, const fq_lease *lease)` | 정상 종료 시 리더십 반납. 아직 내 리스면 만료시각을 0으로 써서 대기 노드가 곧바로 인수한다. `FQ_ENOLEADER` 이미 내 리스 아님, `FQ_ELOCKED` 선출 중(재시도). |
 | `fq_nack` | `int fq_nack(fq_queue *q, fq_msg *m)` | 즉시 재큐잉(attempt+1). 한도 초과 시 `dead/`. `m` 해제. |
-| `fq_msg_free` | `void fq_msg_free(fq_msg *m)` | ack/nack 없이 메시지 폐기(버퍼 해제). |
+| `fq_msg_free` | `void fq_msg_free(fq_msg *m)` | ack/nack 없이 메시지 폐기(버퍼 해제). inflight 파일은 남아 다음 하트비트에 고아로 회수되어 다시 전달된다. ack·nack이 실패한 경우도 같다. |
 
 > 리더십을 보유한 동안 긴 소비 루프를 돌릴 때는 `FQ_HEARTBEAT_MS` 주기로 `fq_renew_lease`를
 > 호출하고, 성공하면 이어서 `fq_recover_stale`도 호출한다. 갱신하지 않으면 리스가 만료되어 대기

@@ -48,6 +48,7 @@ typedef struct {
     void    *data;        /* 페이로드 (소유) */
     size_t   len;
     uint32_t attempt;     /* 현재까지 재처리 시도 횟수 */
+    fq_queue *owner;      /* 내부용: claim한 핸들(들고 있는 메시지 추적). 건드리지 말 것 */
 } fq_msg;
 
 /* ---- 생애주기 ---- */
@@ -68,7 +69,9 @@ void fq_close(fq_queue *q);
 int  fq_publish(fq_queue *q, const void *data, size_t len, const char *stream_key);
 
 /* ---- Consumer / 리더십 (Active-Passive) ---- */
-/* node_id는 fq_open에서 설정한 q->node_id를 사용한다. */
+/* node_id는 fq_open에서 설정한 q->node_id를 사용한다.
+ * lease는 그것을 얻은 핸들로만 claim·recover할 것: fq_recover_stale은 "내 token인데 이 핸들이 들고
+ * 있지 않은" inflight를 고아(ack·nack 실패, ack 없이 free)로 보고 회수한다. */
 int  fq_acquire_leadership(fq_queue *q, fq_lease *lease);
 /* fq_renew_lease: 하트비트. election.lock 안에서 갱신한다.
  *   FQ_OK 연장됨, FQ_ENOLEADER 리더십을 잃음, FQ_ELOCKED 선출이 진행 중이라 이번엔 못 함
@@ -78,12 +81,17 @@ int  fq_recover_stale(fq_queue *q, const fq_lease *lease);    /* 선임자 infli
 /* 리더십 반납: 아직 내 리스면 만료시각을 0으로 써서 대기 노드가 곧바로 인수하게 한다(token 유지).
  * FQ_OK 반납됨, FQ_ENOLEADER 이미 내 리스가 아님, FQ_ELOCKED 선출 진행 중(재시도), FQ_ERR 오류. */
 int  fq_release_leadership(fq_queue *q, const fq_lease *lease);
-int  fq_claim(fq_queue *q, const fq_lease *lease, fq_msg **out); /* FQ_EEMPTY 가능 */
+/* fq_claim: FQ_EEMPTY 가능. 읽을 수 없는 메시지(권한·I/O 오류, 일반 파일이 아닌 항목)는 실패한 시도
+ *   한 번으로 쳐서(attempt+1, 한도면 dead/) 건너뛰고 다음 후보를 준다 — 한 건이 큐를 막지 않는다. */
+int  fq_claim(fq_queue *q, const fq_lease *lease, fq_msg **out);
 /* fq_ack: inflight unlink (처리 완료). m은 항상 해제된다.
  *   FQ_ENOENT = 파일이 이미 없음: 리스를 놓쳐 그 사이 회수됐다면 이 메시지는 다시 전달된다
  *   (중복 처리 신호. 소비자가 멱등이면 무해). */
 int  fq_ack(fq_queue *q, fq_msg *m);
-int  fq_nack(fq_queue *q, fq_msg *m);   /* 즉시 requeue (attempt+1) */
+/* fq_nack: 즉시 requeue (attempt+1, 한도면 dead/). m은 항상 해제된다. */
+int  fq_nack(fq_queue *q, fq_msg *m);
+/* fq_msg_free: ack/nack 없이 m만 해제. inflight 파일은 남아 다음 하트비트(fq_recover_stale)에 고아로
+ *   회수되어 다시 전달된다. ack·nack이 실패한 경우도 같다 — 어느 쪽이든 리더가 바뀔 때까지 멈추지 않는다. */
 void fq_msg_free(fq_msg *m);
 
 /* ---- 골라서 소비 ----
@@ -94,7 +102,7 @@ void fq_msg_free(fq_msg *m);
  *              들여다보기 용). 성공하면 m은 해제된다. */
 typedef int (*fq_want_fn)(const void *data, size_t len, void *ud);
 int  fq_claim_if(fq_queue *q, const fq_lease *lease, fq_want_fn want, void *ud, fq_msg **out);
-int  fq_release(fq_queue *q, fq_msg *m);
+int  fq_release(fq_queue *q, fq_msg *m);   /* 실패하면 m은 남는다: 처리를 마치거나 fq_msg_free 할 것 */
 
 /* ---- 통합 소비 wrapper ---- */
 /* 리더십 획득(또는 유지·갱신) → 인수 시 stale 복구 → 하트비트 → claim 을 한 번에 처리한다.
@@ -123,7 +131,8 @@ int  fq_heartbeat(fq_queue *q);
  * fq_adopt: 이미 영속된(fsync된) 파일 path를 새 메시지로 큐에 넣는다(발행 시각은 지금).
  *           FQ_ENOENT = path가 없음(이미 넣었음).
  * fq_take : claim한 메시지 m을 큐에서 꺼내 path로 옮긴다(ack 대신). 성공하면 m은 해제되고
- *           path의 디렉터리를 fsync한다. 실패하면 m은 claim 상태 그대로(fq_nack 가능).
+ *           path의 디렉터리를 fsync한다. 실패하면 m은 claim 상태 그대로(fq_nack 가능, 또는
+ *           FQ_ENOENT면 이미 회수된 것이니 fq_msg_free).
  *           이동은 rename 한 번이라 크래시 시점과 무관하게 메시지는 inflight나 path 한 곳에만 있다.
  *           path가 이미 있으면 FQ_EEXIST(덮어쓰지 않음). path는 호출자 소유의 새 이름이어야 한다:
  *           Cygwin 등에서는 존재 검사와 rename 사이에 다른 쪽이 path를 만들면 덮어쓸 수 있다.

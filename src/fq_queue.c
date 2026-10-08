@@ -11,6 +11,7 @@
 #include <string.h>
 
 static void claim_cache_clear(fq_queue *q);
+static fq_msg *new_msg(fq_queue *q, const char *inf_name, void *data, size_t len, uint32_t attempt);
 
 /* root 상한: 하위 경로("<root>/inflight/<이름>__t<token>.a<N>", 이름 최대 약 270자)가 경로 버퍼(1408)에
  * 잘리지 않고 들어가야 한다. snprintf가 조용히 잘라 엉뚱한 경로를 쓰는 일을 막는다. */
@@ -57,6 +58,9 @@ void fq_close(fq_queue *q)
     if (!q) return;
     if (q->lead_held) fq_release_leadership(q, &q->lead_lease);  /* 실패해도 리스 만료로 넘어간다 */
     claim_cache_clear(q);
+    /* 아직 들고 있는 메시지는 핸들보다 오래 살 수 있다: 나중의 fq_msg_free가 해제된 핸들을 건드리지 않게 */
+    for (size_t i = 0; i < q->held_n; i++) q->held[i]->owner = NULL;
+    free(q->held);
     free(q);
 }
 
@@ -315,18 +319,22 @@ int fq_claim(fq_queue *q, const fq_lease *lease, fq_msg **out)
             if (rc == FQ_ENOENT) continue;                    /* 경합 패배/이미 처리됨 */
             if (rc != FQ_OK) return FQ_ERR;
 
-            /* rename은 됐는데 읽기/할당이 실패하면 내 token이 찍힌 파일이 inflight에 남는다.
-             * 내 token 이상은 복구 대상이 아니라 내가 죽을 때까지 멈추므로 즉시 되돌린다. */
+            /* 읽기 실패(EACCES·EIO, 일반 파일이 아닌 항목)는 이 메시지의 실패한 시도 한 번으로 친다.
+             * 원래 이름으로 되돌리면 attempt가 늘지 않아 영원히 DLQ로 가지 않고, 이름이 가장 오래되어
+             * 캐시를 채울 때마다 맨 앞에서 FQ_ERR를 낸다. attempt+1로 보내면 일시 오류는 재시도되고
+             * 계속 실패하면 dead/로 격리된다. 큐는 다음 후보로 계속 흐른다. */
             void *data = NULL; size_t len = 0;
-            if (fq_fs_read_file(dst, &data, &len) != FQ_OK) { fq_fs_rename(dst, src); return FQ_ERR; }
+            if (fq_fs_read_file(dst, &data, &len) != FQ_OK) {
+                if (fq_requeue_inflight(q, inf_name, NULL) != FQ_OK) {
+                    fq_fs_rename(dst, src);   /* 그것도 안 되면 원래 자리로(내 token의 고아 방지) */
+                    return FQ_ERR;
+                }
+                continue;
+            }
 
-            fq_msg *m = (fq_msg *)calloc(1, sizeof(*m));
+            /* 할당 실패는 메시지 탓이 아니므로 그대로 되돌린다(내 token의 고아 방지). */
+            fq_msg *m = new_msg(q, inf_name, data, len, attempt);
             if (!m) { free(data); fq_fs_rename(dst, src); return FQ_ERR; }
-            snprintf(m->name, sizeof(m->name), "%s", inf_name);
-            m->data = data;
-            m->len = len;
-            m->attempt = attempt;
-
             *out = m;
             return FQ_OK;
         }
@@ -365,12 +373,8 @@ int fq_claim_if(fq_queue *q, const fq_lease *lease, fq_want_fn want, void *ud, f
         if (rc == FQ_ENOENT) { free(data); continue; }
         if (rc != FQ_OK) { free(data); result = FQ_ERR; break; }
 
-        fq_msg *m = (fq_msg *)calloc(1, sizeof(*m));
+        fq_msg *m = new_msg(q, inf_name, data, len, attempt);
         if (!m) { free(data); fq_fs_rename(dst, src); result = FQ_ERR; break; } /* 고아 inflight 방지 */
-        snprintf(m->name, sizeof(m->name), "%s", inf_name);
-        m->data = data;
-        m->len = len;
-        m->attempt = attempt;
         *out = m;
         result = FQ_OK;
     }
@@ -405,37 +409,75 @@ int fq_ack(fq_queue *q, fq_msg *m)
     return rc;   /* FQ_ENOENT: 이미 회수됨 → 다시 전달될 수 있음(fq.h) */
 }
 
-int fq_nack(fq_queue *q, fq_msg *m)
+int fq_requeue_inflight(fq_queue *q, const char *inflight_name, int *to_dead)
 {
-    /* inflight -> incoming 으로 되돌림 (attempt+1), 한도 초과 시 dead/ */
     char logical[640];
-    fq_parse_inflight(m->name, logical, sizeof(logical));
-
+    fq_parse_inflight(inflight_name, logical, sizeof(logical));
     char base[512];
     uint32_t attempt = 0;
     fq_parse_attempt(logical, base, sizeof(base), &attempt);
 
-    char src[1408];
-    fq_path(src, sizeof(src), q->root, FQ_DIR_INFLIGHT, m->name);
-
-    int rc;
-    if (attempt + 1 >= FQ_MAX_ATTEMPTS) {
-        char dst[1408];
+    char src[1408], dst[1408];
+    fq_path(src, sizeof(src), q->root, FQ_DIR_INFLIGHT, inflight_name);
+    int dead = attempt + 1 >= FQ_MAX_ATTEMPTS;
+    if (dead) {
         fq_path(dst, sizeof(dst), q->root, FQ_DIR_DEAD, logical);
-        rc = fq_fs_rename(src, dst);
     } else {
-        char req_name[640], dst[1408];
+        char req_name[640];
         snprintf(req_name, sizeof(req_name), "%s.a%u", base, attempt + 1);
         fq_path(dst, sizeof(dst), q->root, FQ_DIR_INCOMING, req_name);
-        rc = fq_fs_rename(src, dst);
     }
+    if (to_dead) *to_dead = dead;
+    return fq_fs_rename(src, dst);
+}
+
+int fq_nack(fq_queue *q, fq_msg *m)
+{
+    /* inflight -> incoming 으로 되돌림 (attempt+1), 한도 초과 시 dead/.
+     * 실패해도 m은 해제된다. 남은 inflight는 이제 아무도 들고 있지 않으므로 다음 하트비트(recover_stale)가
+     * 고아로 회수한다. */
+    int rc = fq_requeue_inflight(q, m->name, NULL);
     fq_msg_free(m);
     return rc;
+}
+
+/* ---- 들고 있는 메시지 추적 ---- */
+
+static fq_msg *new_msg(fq_queue *q, const char *inf_name, void *data, size_t len, uint32_t attempt)
+{
+    if (q->held_n == q->held_cap) {
+        size_t nc = q->held_cap ? q->held_cap * 2 : 8;
+        fq_msg **nv = (fq_msg **)realloc(q->held, nc * sizeof(*nv));
+        if (!nv) return NULL;
+        q->held = nv;
+        q->held_cap = nc;
+    }
+    fq_msg *m = (fq_msg *)calloc(1, sizeof(*m));
+    if (!m) return NULL;
+    snprintf(m->name, sizeof(m->name), "%s", inf_name);
+    m->data = data;
+    m->len = len;
+    m->attempt = attempt;
+    m->owner = q;
+    q->held[q->held_n++] = m;
+    return m;
+}
+
+int fq_is_held(const fq_queue *q, const char *inflight_name)
+{
+    for (size_t i = 0; i < q->held_n; i++)
+        if (strcmp(q->held[i]->name, inflight_name) == 0) return 1;
+    return 0;
 }
 
 void fq_msg_free(fq_msg *m)
 {
     if (!m) return;
+    fq_queue *q = m->owner;
+    if (q) {
+        for (size_t i = 0; i < q->held_n; i++)
+            if (q->held[i] == m) { q->held[i] = q->held[--q->held_n]; break; }
+    }
     free(m->data);
     free(m);
 }

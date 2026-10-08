@@ -178,6 +178,10 @@ inflight/<이름>.msg[.a<attempt>]__t<token>    # claim 시 리더 token을 stam
 
 새 리더는 인수 직후 `inflight/`를 스캔하여 **이전 token**으로 stamp된 파일
 (죽은 선임자가 처리 중이던 것)을 `incoming/`으로 되돌린다(rename). `attempt` +1.
+같은 스캔이 **고아**도 회수한다: 내 token인데 이 핸들이 들고 있지 않은 inflight(ack·nack이 실패했거나
+ack 없이 해제한 메시지). 핸들은 claim해서 아직 들고 있는 메시지를 추적하므로 처리 중인 것과 구분된다.
+읽을 수 없는 메시지(권한·I/O 오류, 일반 파일이 아닌 항목)는 claim 시 실패한 시도로 쳐서 attempt+1 —
+결국 `dead/`로 격리되어 한 건이 큐를 막지 않는다.
 같은 스캔을 **하트비트마다** 반복한다. 인수 때 한 번만 하면, 리스 만료를 아직 모르는 좀비가
 그 뒤에 옛 token으로 claim한 파일은 다음 failover까지 `inflight/`에 멈춰 있기 때문이다.
 `inflight/`는 대개 수 개라 비용은 하트비트 자체와 비슷하다.
