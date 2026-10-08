@@ -58,7 +58,7 @@ static thread_ret THREAD_CALL replace_writer(void *arg)
     char tmp[1100];
     snprintf(tmp, sizeof(tmp), "%s/replaced.tmp", c->dir);
     while (!c->stop) {
-        if (fq_fs_write_sync(tmp, "v", 1) == FQ_OK && fq_fs_rename(tmp, c->target) == FQ_OK)
+        if (fq_fs_write_sync(tmp, "v", 1) == FQ_OK && fq_fs_replace(tmp, c->target) == FQ_OK)
             c->replaces++;
     }
     return 0;
@@ -139,7 +139,7 @@ int main(int argc, char **argv)
         fq_fs_unlink(f);
     }
 
-    /* 6) 교체 중 읽기: leader.info는 교체형 rename으로 갱신되고 다른 노드가 동시에 읽는다.
+    /* 6) 교체 중 읽기: leader.info는 fq_fs_replace로 갱신되고 다른 노드가 동시에 읽는다.
      *    일부 FS(Cygwin/NTFS 실측)는 교체 순간 읽는 쪽에 ENOENT를 보인다. 라이브러리는 이를
      *    fq_read_replaced의 짧은 재시도로 흡수하므로, 재시도 후에도 못 읽는 경우가 0이어야 한다. */
     printf("[6] 교체형 rename 중 동시 읽기\n");
@@ -151,7 +151,7 @@ int main(int argc, char **argv)
         fq_fs_write_sync(c.target, "v", 1);
         thread_t th;
         CHECK(thread_start(&th, replace_writer, &c) == 0, "교체 스레드 시작");
-        long reads = 0, raw_enoent = 0, misses = 0;
+        long reads = 0, raw_enoent = 0, misses = 0, miss_enoent = 0;
         uint64_t end = fq_now_mono_ms() + 1500;
         while (fq_now_mono_ms() < end) {
             void *buf = NULL; size_t len = 0;
@@ -159,13 +159,16 @@ int main(int argc, char **argv)
             if (fq_fs_read_file(c.target, &buf, &len) == FQ_ENOENT) raw_enoent++;
             else free(buf);
             buf = NULL;
-            if (fq_read_replaced(c.target, &buf, &len) != FQ_OK) misses++;
+            int rrc = fq_read_replaced(c.target, &buf, &len);
+            if (rrc != FQ_OK) { misses++; if (rrc == FQ_ENOENT) miss_enoent++; }
             else free(buf);
         }
         c.stop = 1;
         thread_join(th);
         printf("  [INFO] 읽기 %ld회, 교체 %ld회, 재시도 없이 ENOENT %ld회%s\n", reads, c.replaces,
                raw_enoent, raw_enoent ? " (이 FS는 교체가 읽는 쪽에 원자적이지 않음)" : "");
+        if (misses) printf("  [INFO] 재시도 뒤에도 실패 %ld회 (ENOENT %ld, 그 밖 %ld)\n", misses, miss_enoent,
+                           misses - miss_enoent);
         CHECK(c.replaces > 0, "교체가 실제로 일어남");
         CHECK(misses == 0, "재시도 읽기(fq_read_replaced)는 항상 성공");
         fq_fs_unlink(c.target);

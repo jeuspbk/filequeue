@@ -43,6 +43,19 @@
    `test_election`). 그래서 `leader.info` 교체만 `fq_fs_replace`로 하며, Win32에서는 핸들 기반 POSIX 의미
    rename(Win10 1809+, NTFS)을 쓴다. 이 rename은 핸들이 파일을 따라가므로 src를 두 쪽이 다투는 claim에
    쓰면 둘 다 성공한다 — 내 임시 파일이 src인 교체에만 쓴다.
+   **SMB 실측 (loopback `//localhost/D$`, 2026-10):**
+   - **Cygwin 빌드 + SMB는 쓰면 안 된다.** 대기 노드가 `leader.info`를 계속 읽는 동안 리더가 교체하면,
+     `leader.info`가 삭제 대기(delete-pending) 상태에 걸려 읽기·교체가 모두 EACCES로 계속 실패하고(리더의
+     하트비트 전부 실패), 결국 사라지면 대기 노드가 "리더 없음"으로 보고 인수했다(살아 있는 리스를 탈취, 1회
+     관측). Cygwin의 rename이 열린 대상을 먼저 지우는 방식으로 교체하기 때문으로 보인다. 단독 실행이나
+     `test_atomicity`로는 재현이 들쭉날쭉하므로 "통과했으니 괜찮다"로 판단하지 말 것.
+   - **네이티브 Win32 빌드 + SMB**: 단위·failover 테스트 통과, 읽는 쪽 ENOENT 0회, 탈취 0회. 다만 SMB에서는
+     핸들 기반 POSIX rename이 지원되지 않아 `MoveFileEx`로 대신하며, 대기 노드가 쉬지 않고 읽으면 교체의
+     15~25%가 재시도를 다 쓰고 실패한다(하트비트 `FQ_ERR`). `fq_consume`은 이를 일시 오류로 견디지만
+     (리스 안에서 100ms 뒤 재시도), 대기 노드의 폴링 주기를 너무 짧게 잡지 말 것.
+   - SMB 클라이언트 캐시(FileInfoCache·FileNotFoundCache·DirectoryCache, 기본 5~10초)는 다른 머신의 변경을
+     늦게 보이게 할 수 있다. loopback에서는 재현되지 않았다(~15ms 안에 보임). 실제 다중 머신 배치에서는
+     `test_election`을 두 머신에서 돌려 확인할 것.
 2. **`O_EXCL` / `CREATE_NEW` 배타 생성은 원자적** ← 리더 선출 mutex
 3. (선택) OS 권고 락(`LockFileEx` / `fcntl`)의 노드 간 신뢰성 ← 있으면 최적화, 없어도 동작
 

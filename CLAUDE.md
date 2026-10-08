@@ -144,5 +144,7 @@ fq_fs_posix.c / fq_fs_win32.c   (플랫폼 원자 연산 추상화)
   대상이 아니라서 없으면 리더가 바뀔 때까지 멈춘다. 그러므로 lease는 그것을 얻은 핸들로만 claim할 것.
   반대로 **이 핸들이 들고 있는 메시지는 token과 무관하게 회수하지 않는다**: 리스 자체 만료 뒤 재획득하면
   (token +1) 처리 중인 메시지가 옛 token으로 남는데, 이를 회수하면 같은 소비자에게 다시 주고 attempt를 헛되이 올린다.
+- **Cygwin 빌드를 SMB 공유에서 쓰지 말 것**: leader.info 교체가 깨져 하트비트 전멸·리더십 탈취가 관측됐다
+  (`DESIGN.md` §0 SMB 실측). SMB는 네이티브 Win32 빌드로. loopback SMB(`//localhost/D$/...`)로 재현 가능.
 - 대상 스토리지가 바뀌면 `test_atomicity`를 그 스토리지에서 먼저 돌려 rename/create/lock 원자성을
   확인할 것. 이 전제가 깨지면 큐 정확성이 보장되지 않는다 (`DESIGN.md` §0).
