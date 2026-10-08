@@ -85,7 +85,7 @@ int fq_fs_rename(const char *src, const char *dst)
 {
     /* rename(2)은 원자적이며 대상을 교체한다. src를 두 쪽이 동시에 rename하면 한 쪽은 ENOENT. */
     if (rename(src, dst) != 0)
-        return (errno == ENOENT) ? FQ_ENOENT : FQ_ERR;
+        return errno == ENOENT ? FQ_ENOENT : errno == ENAMETOOLONG ? FQ_EINVAL : FQ_ERR;
     return FQ_OK;
 }
 
@@ -104,6 +104,7 @@ int fq_fs_rename_noreplace(const char *src, const char *dst)
     if (renameat2(AT_FDCWD, src, AT_FDCWD, dst, RENAME_NOREPLACE) == 0) return FQ_OK;
     if (errno == EEXIST) return FQ_EEXIST;
     if (errno == ENOENT) return FQ_ENOENT;
+    if (errno == ENAMETOOLONG) return FQ_EINVAL;
     if (errno != EINVAL && errno != ENOSYS) return FQ_ERR;   /* 미지원이면 아래로 */
 #endif
     struct stat st;
@@ -272,6 +273,12 @@ int fq_fs_now_ms(const char *dir, const char *tag, uint64_t *out_ms)
     int rc = fq_fs_mtime_ms(tmp, out_ms);
     unlink(tmp);
     return rc;
+}
+
+int fq_fs_path_fits(const char *path, size_t extra)
+{
+    (void)path; (void)extra;   /* PATH_MAX(보통 4096)는 큐의 경로 버퍼(1408)보다 크다 */
+    return 1;
 }
 
 #endif /* !_WIN32 || __CYGWIN__ */

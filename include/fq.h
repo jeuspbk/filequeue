@@ -68,7 +68,8 @@ void fq_close(fq_queue *q);
 /* stream_key: NULL 허용. 같은 key는 같은 파티션으로 묶여 순서 보존에 사용 가능.
  *             node_id와 같은 문자 규칙(1~127자). 어기면 FQ_EINVAL (fq_adopt도 동일).
  *             node_id 길이 + stream_key 길이는 160자 이하로 둘 것(넘으면 FQ_EINVAL일 수 있다): 메시지 이름에 재시도·claim
- *             접미사가 붙어도 파일명 한도(255자) 안이어야 한다. */
+ *             접미사가 붙어도 파일명 한도(255자) 안이어야 한다. 네이티브 Win32(ANSI API)는 루트를 포함한
+ *             전체 경로도 접미사까지 260자 안이어야 한다(넘으면 FQ_EINVAL). */
 int  fq_publish(fq_queue *q, const void *data, size_t len, const char *stream_key);
 
 /* ---- Consumer / 리더십 (Active-Passive) ---- */
@@ -85,7 +86,9 @@ int  fq_recover_stale(fq_queue *q, const fq_lease *lease);    /* 선임자 infli
  * FQ_OK 반납됨, FQ_ENOLEADER 이미 내 리스가 아님, FQ_ELOCKED 선출 진행 중(재시도), FQ_ERR 오류. */
 int  fq_release_leadership(fq_queue *q, const fq_lease *lease);
 /* fq_claim: FQ_EEMPTY 가능. 읽을 수 없는 메시지(권한·I/O 오류, 일반 파일이 아닌 항목)는 실패한 시도
- *   한 번으로 쳐서(attempt+1, 한도면 dead/) 건너뛰고 다음 후보를 준다 — 한 건이 큐를 막지 않는다. */
+ *   한 번으로 쳐서(attempt+1, 한도면 dead/) 건너뛰고 다음 후보를 준다 — 한 건이 큐를 막지 않는다.
+ *   claim 접미사를 붙이면 이름·경로 한도를 넘는 메시지(이 검사 전 버전이 남긴 것, 밖에서 넣은 것)는
+ *   같은 이름으로 dead/에 격리하고 건너뛴다. */
 int  fq_claim(fq_queue *q, const fq_lease *lease, fq_msg **out);
 /* fq_ack: inflight unlink (처리 완료). m은 항상 해제된다.
  *   FQ_ENOENT = 파일이 이미 없음: 리스를 놓쳐 그 사이 회수됐다면 이 메시지는 다시 전달된다
@@ -179,7 +182,7 @@ int  fq_return(fq_queue *q, const char *path, uint32_t attempt);
 #define FQ_ORDER_BEFORE   2
 #define FQ_ORDER_NAME_MAX 220   /* 끼워 넣은 이름의 최대 길이(inflight 접미사를 더해도 255자 안).
                                    네이티브 Win32(ANSI API)는 루트를 포함한 전체 경로가 260자 안이어야
-                                   하므로, 루트가 길면 그 전에 FQ_ERR로 멈춘다 */
+                                   하므로, 루트가 길면 그 전에 FQ_EINVAL로 멈춘다 */
 typedef struct {
     int        mode;            /* FQ_ORDER_* */
     fq_want_fn before;          /* FQ_ORDER_BEFORE: 대상 고르기 */

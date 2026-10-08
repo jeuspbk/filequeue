@@ -139,7 +139,12 @@ int main(int argc, char **argv)
                 CHECK(fq_publish(ql, "x", 1, sk) == FQ_EINVAL, "claim 접미사를 못 붙일 긴 이름 거부");
                 fq_order head = { FQ_ORDER_HEAD, NULL, NULL };
                 sk[97] = '\0';                                  /* 합 160자: 맨 앞(HEAD)이어도 받는다 */
+#if defined(_WIN32) && !defined(__CYGWIN__)
+                /* 네이티브 Win32: 이름 약 220자 + 루트 + "/incoming/" + claim 접미사는 전체 경로 260자를 넘는다 */
+                CHECK(fq_publish_ex(ql, "x", 1, sk, &head) == FQ_EINVAL, "Win32: 합 160자 이름은 경로 한도로 거부");
+#else
                 CHECK(fq_publish_ex(ql, "x", 1, sk, &head) != FQ_EINVAL, "합 160자 이름 허용");
+#endif
                 fq_close(ql);
             }
         }

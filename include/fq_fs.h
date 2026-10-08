@@ -26,6 +26,8 @@ int  fq_fs_write_sync(const char *path, const void *data, size_t len);
 
 /* 원자적 rename. 대상이 있으면 원자적으로 교체한다(POSIX rename / MOVEFILE_REPLACE_EXISTING).
  * src가 없으면 FQ_ENOENT. 같은 src를 두 쪽이 동시에 rename하면 정확히 한 쪽만 성공한다.
+ * 이름이나 경로가 플랫폼 한도를 넘으면 FQ_EINVAL(POSIX ENAMETOOLONG, Win32 전체 경로 260자): Win32는 이를
+ * PATH_NOT_FOUND로 알려 와 FQ_ENOENT(경합 패배)로 오인하면 claim이 같은 메시지를 끝없이 다시 시도한다.
  * 메시지 상태 전이(대상 이름이 구조상 유일)와 leader.info 교체에 쓴다. */
 int  fq_fs_rename(const char *src, const char *dst);
 
@@ -75,5 +77,9 @@ int  fq_fs_mtime_ms(const char *path, uint64_t *out_ms);
 /* FS 자체 시각을 ms로 (dir에 임시 파일 ".now-<tag>-<id>"를 만들어 mtime을 읽음).
  * 노드 간 clock skew를 피하기 위한 단일 시각 출처. dir이 공유 디렉터리이므로 tag에는 node_id를 줄 것. */
 int  fq_fs_now_ms(const char *dir, const char *tag, uint64_t *out_ms);
+
+/* path 끝에 extra자를 더 붙인 경로를 이 플랫폼이 다룰 수 있는가(1=예). 파일명 한도(255)는 호출자가 따로 본다.
+ * POSIX는 항상 1(경로 한도가 큐 버퍼보다 크다). Win32(ANSI API)는 전체 경로 + extra가 MAX_PATH 미만이어야 한다. */
+int  fq_fs_path_fits(const char *path, size_t extra);
 
 #endif /* FQ_FS_H */

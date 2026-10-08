@@ -133,6 +133,8 @@ static int incoming_path(fq_queue *q, const char *id, const char *stream_key, co
     if (rc != FQ_OK) return rc;
     if (strlen(msg_name) > FQ_MSG_NAME_MAX) return FQ_EINVAL;
     fq_path(msg_path, n, q->root, FQ_DIR_INCOMING, msg_name);
+    /* 경로 전체 한도(네이티브 Win32 260자)도 같은 이유로 접미사까지 붙여 본다("inflight"는 "incoming"과 길이가 같다) */
+    if (!fq_fs_path_fits(msg_path, 255 - FQ_MSG_NAME_MAX)) return FQ_EINVAL;
     return FQ_OK;
 }
 
@@ -313,6 +315,24 @@ static int claim_cache_fill(fq_queue *q)
     return 1;
 }
 
+/* claim 접미사를 붙이면 이름·경로 한도를 넘는 incoming 메시지(발행 검사 전 버전이 남긴 것, 밖에서 넣은 것)를
+ * 같은 이름으로 dead/에 격리한다. "dead"는 "incoming"보다 짧아 그대로 들어간다. 두면 claim이 매번 실패해
+ * 큐 맨 앞을 막거나(FQ_ERR), Win32에서는 경합 패배로 보여 끝없이 다시 시도한다.
+ * 반환: FQ_OK = 치웠음(또는 그 사이 사라짐), 그 밖 = 오류. */
+static int quarantine_incoming(fq_queue *q, const char *name)
+{
+    char src[1408], dst[1408];
+    fq_path(src, sizeof(src), q->root, FQ_DIR_INCOMING, name);
+    fq_path(dst, sizeof(dst), q->root, FQ_DIR_DEAD, name);
+    int rc = fq_fs_rename(src, dst);
+    if (rc == FQ_ENOENT) return FQ_OK;
+    if (rc != FQ_OK) return rc;
+    char dead_dir[1280];
+    fq_path(dead_dir, sizeof(dead_dir), q->root, FQ_DIR_DEAD, NULL);
+    fq_fs_fsync_dir(dead_dir);
+    return FQ_OK;
+}
+
 int fq_claim(fq_queue *q, const fq_lease *lease, fq_msg **out)
 {
     for (;;) {
@@ -342,6 +362,10 @@ int fq_claim(fq_queue *q, const fq_lease *lease, fq_msg **out)
 
             int rc = fq_fs_rename(src, dst);
             if (rc == FQ_ENOENT) continue;                    /* 경합 패배/이미 처리됨 */
+            if (rc == FQ_EINVAL) {                            /* 접미사를 붙일 수 없는 이름 */
+                if (quarantine_incoming(q, name) != FQ_OK) return FQ_ERR;
+                continue;
+            }
             if (rc != FQ_OK) return FQ_ERR;
 
             /* 읽기 실패(EACCES·EIO, 일반 파일이 아닌 항목)는 이 메시지의 실패한 시도 한 번으로 친다.
@@ -399,14 +423,21 @@ int fq_claim_if(fq_queue *q, const fq_lease *lease, fq_want_fn want, void *ud, f
         if (rrc != FQ_OK) {
             /* 읽을 수 없는 메시지(권한·I/O 오류, 일반 파일이 아닌 항목): fq_claim과 같이 claim해서 실패한
              * 시도 한 번으로 친다(attempt+1, 한도면 dead/). 건너뛰기만 하면 영원히 남아 매번 다시 읽힌다. */
-            if (fq_fs_rename(src, dst) == FQ_OK && fq_requeue_inflight(q, inf_name, NULL) != FQ_OK)
+            int mrc = fq_fs_rename(src, dst);
+            if (mrc == FQ_OK && fq_requeue_inflight(q, inf_name, NULL) != FQ_OK)
                 fq_fs_rename(dst, src);                             /* 그것도 안 되면 원래 자리로 */
+            if (mrc == FQ_EINVAL) quarantine_incoming(q, name);     /* fq_claim과 같이 격리 */
             continue;
         }
         if (!want(data, len, ud)) { free(data); continue; }
 
         int rc = fq_fs_rename(src, dst);
         if (rc == FQ_ENOENT) { free(data); continue; }
+        if (rc == FQ_EINVAL) {                                      /* fq_claim과 같이 격리 */
+            free(data);
+            if (quarantine_incoming(q, name) != FQ_OK) { result = FQ_ERR; break; }
+            continue;
+        }
         if (rc != FQ_OK) { free(data); result = FQ_ERR; break; }
 
         fq_msg *m = new_msg(q, inf_name, data, len, attempt);

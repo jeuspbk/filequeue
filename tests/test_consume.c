@@ -16,6 +16,9 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#if defined(_WIN32) && !defined(__CYGWIN__)
+#  include <windows.h>
+#endif
 
 static int fails = 0;
 #define CHECK(cond, msg) do { \
@@ -213,6 +216,56 @@ int main(int argc, char **argv)
         if (x) fq_close(x);
         if (y) fq_close(y);
         if (z) fq_close(z);
+    }
+
+    printf("[10] claim 접미사를 붙일 수 없는 긴 이름: dead/로 격리하고 다음 메시지로\n");
+    {
+        char lroot[1100], ldir[1200], lname[300], lpath[1600], dpath[1600];
+        snprintf(lroot, sizeof(lroot), "%s/long", root);
+        fq_queue *ql = NULL;
+        CHECK(fq_open(lroot, "nodeL", &ql) == FQ_OK && ql, "fq_open (별도 큐)");
+        if (ql) {
+            fq_msg *m = NULL;
+            while (fq_consume(ql, &m) == FQ_OK) fq_ack(ql, m);   /* 이전 실행의 잔여 */
+            snprintf(ldir, sizeof(ldir), "%s/incoming", lroot);
+            /* POSIX: 이름 253자 + "__t<token>"이 255자를 넘는다. Win32: 이름은 들어가지만 전체 경로가 접미사로 260자를 넘는다 */
+            size_t ln = 253;
+#if defined(_WIN32) && !defined(__CYGWIN__)
+            char full[1200];
+            DWORD fl = GetFullPathNameA(ldir, sizeof(full), full, NULL);
+            ln = 258 - (fl + 1);
+#endif
+            memset(lname, 'L', ln);
+            lname[ln] = '\0';
+            memcpy(lname, "0000000000000000-0000000000-x", 29);   /* 정렬상 맨 앞 */
+            snprintf(lpath, sizeof(lpath), "%s/%s", ldir, lname);
+            CHECK(fq_fs_write_sync(lpath, "long", 4) == FQ_OK, "긴 이름 메시지를 incoming에 직접 둠");
+            CHECK(fq_publish(ql, "ok", 2, NULL) == FQ_OK, "정상 메시지 발행");
+            m = NULL;
+            int rc = fq_consume(ql, &m);
+            CHECK(rc == FQ_OK && m && m->len == 2 && memcmp(m->data, "ok", 2) == 0,
+                  "긴 이름을 건너뛰고 정상 메시지를 claim (막히거나 끝없이 돌지 않음)");
+            if (rc == FQ_OK) fq_ack(ql, m);
+            CHECK(fq_consume(ql, &m) == FQ_EEMPTY, "이후 FQ_EEMPTY");
+            snprintf(dpath, sizeof(dpath), "%s/dead/%s", lroot, lname);
+            CHECK(fq_fs_exists(dpath) == 1 && fq_fs_exists(lpath) == 0, "긴 이름은 같은 이름으로 dead/에");
+            fq_fs_unlink(dpath);
+            fq_close(ql);
+        }
+#if defined(_WIN32) && !defined(__CYGWIN__)
+        /* 발행 쪽: 메시지 경로(약 250자)는 들어가지만 claim 접미사까지 붙이면 260자를 넘는 루트 → 거절.
+         * 이름 = 16+1+10+1+"nodeW"+1+32+".msg" = 70자, incoming 디렉터리 = 루트 + 9자. */
+        char broot[1100], rfull[1100];
+        DWORD rl = GetFullPathNameA(root, sizeof(rfull), rfull, NULL);
+        int pad = 170 - (int)rl - 1;
+        snprintf(broot, sizeof(broot), "%s/%0*d", root, pad > 1 ? pad : 1, 0);
+        fq_queue *qw = NULL;
+        CHECK(fq_open(broot, "nodeW", &qw) == FQ_OK && qw, "Win32: 긴 루트 fq_open");
+        if (qw) {
+            CHECK(fq_publish(qw, "w", 1, NULL) == FQ_EINVAL, "Win32: 전체 경로가 한도를 넘는 발행은 FQ_EINVAL");
+            fq_close(qw);
+        }
+#endif
     }
 
     fq_close(qa);

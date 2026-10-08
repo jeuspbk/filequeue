@@ -80,12 +80,35 @@ int fq_fs_write_sync(const char *path, const void *data, size_t len)
  * (MSVC 실기 검증 필요) */
 #define FQ_RENAME_RETRIES 10
 
+/* 전체 경로 길이(끝의 NUL 제외). 실패하면 0. */
+static size_t full_path_len(const char *path)
+{
+    DWORD need = GetFullPathNameA(path, 0, NULL, NULL);   /* NUL 포함 필요 크기 */
+    return need ? (size_t)need - 1 : 0;
+}
+
+int fq_fs_path_fits(const char *path, size_t extra)
+{
+    size_t n = full_path_len(path);
+    return n && n + extra < MAX_PATH;
+}
+
+/* ANSI API는 전체 경로가 MAX_PATH를 넘으면 PATH_NOT_FOUND를 낸다(MinGW 실측). 그대로 FQ_ENOENT로 돌려주면
+ * claim이 경합 패배로 보고 같은 메시지를 끝없이 다시 시도하므로 FQ_EINVAL로 구분한다(fq_fs.h). */
+static int not_found_rc(const char *src, const char *dst, DWORD e)
+{
+    if (e == ERROR_FILENAME_EXCED_RANGE || !fq_fs_path_fits(src, 0) || !fq_fs_path_fits(dst, 0))
+        return FQ_EINVAL;
+    return (e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND) ? FQ_ENOENT : FQ_ERR;
+}
+
 int fq_fs_rename(const char *src, const char *dst)
 {
     for (int i = 0;; i++) {
         if (MoveFileExA(src, dst, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) return FQ_OK;
         DWORD e = GetLastError();
-        if (e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND) return FQ_ENOENT;
+        if (e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND || e == ERROR_FILENAME_EXCED_RANGE)
+            return not_found_rc(src, dst, e);
         if ((e != ERROR_ACCESS_DENIED && e != ERROR_SHARING_VIOLATION) || i >= FQ_RENAME_RETRIES)
             return FQ_ERR;
         Sleep(1);
@@ -141,7 +164,8 @@ int fq_fs_rename_noreplace(const char *src, const char *dst)
     if (MoveFileExA(src, dst, MOVEFILE_WRITE_THROUGH)) return FQ_OK;
     DWORD e = GetLastError();
     if (e == ERROR_ALREADY_EXISTS || e == ERROR_FILE_EXISTS) return FQ_EEXIST;
-    if (e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND) return FQ_ENOENT;
+    if (e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND || e == ERROR_FILENAME_EXCED_RANGE)
+        return not_found_rc(src, dst, e);
     return FQ_ERR;
 }
 

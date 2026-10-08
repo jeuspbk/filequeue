@@ -41,11 +41,12 @@ bash tests/test_concurrency.sh ./build/fq_producer.exe ./build/fq_consumer.exe
 네이티브 Windows 실행 파일을 만들어 검증한다(수정 시 반드시):
 
 ```bash
-O=<스크래치 디렉터리>; CC=x86_64-w64-mingw32-gcc; FL="-std=c11 -O1 -Wall -Wextra -I$PWD/include"
-(cd "$O" && $CC $FL -c "$PWD"/src/*.c)
-for t in test_atomicity test_basic test_consume test_twophase test_clock test_election; do $CC $FL -o "$O/$t.exe" tests/$t.c "$O"/*.o; done
+P=$PWD; O=<스크래치 디렉터리>; CC=x86_64-w64-mingw32-gcc; FL="-std=c11 -O1 -Wall -Wextra -I$P/include"
+(cd "$O" && $CC $FL -c "$P"/src/*.c)   # 서브셸 안의 $PWD는 $O가 된다
+for t in test_atomicity test_basic test_consume test_twophase test_clock test_election test_order; do $CC $FL -o "$O/$t.exe" tests/$t.c "$O"/*.o; done
 for e in fq_producer fq_consumer; do $CC $FL -o "$O/$e.exe" examples/$e.c "$O"/*.o; done
-"$O/test_basic.exe" "$O/q"   # 네이티브 exe에는 Windows 경로(C:/...)를 줄 것 (/tmp 불가)
+"$O/test_basic.exe" "$O/q"   # 네이티브 exe에는 Windows 경로(C:/...)를 줄 것 (/tmp 불가). 루트는 짧게:
+                             # 전체 경로 260자 한도라 긴 스크래치 경로에선 순서 지정 등이 FQ_EINVAL로 거절된다
 TMPDIR="$O/tmpd" bash tests/test_concurrency.sh "$O/fq_producer.exe" "$O/fq_consumer.exe"
 ```
 
