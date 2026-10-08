@@ -1,2 +1,4 @@
-# 셸 스크립트는 체크아웃 시에도 LF 유지 (core.autocrlf=true에서 CRLF가 되면 Cygwin bash가 $'\r' 오류)
-*.sh text eol=lf
+# 모든 텍스트 파일은 저장소·작업 트리 모두 LF. core.autocrlf=true인 Windows git이 체크아웃하면 CRLF가 되어,
+# 같은 작업 트리를 쓰는 다른 git(WSL·Cygwin, autocrlf 없음)에는 내용 변화 없는 수정으로 보인다.
+# 셸 스크립트는 특히 CRLF면 Cygwin bash가 $'\r' 오류를 낸다. 바이너리는 text=auto가 자동으로 제외한다.
+* text=auto eol=lf
