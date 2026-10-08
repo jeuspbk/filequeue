@@ -184,6 +184,37 @@ int main(int argc, char **argv)
         if (y) fq_close(y);
     }
 
+    printf("[9] election.lock: stale 판정 뒤 다른 노드가 새로 만든 락은 옮기지 않음\n");
+    {
+        fq_queue *x = NULL, *y = NULL, *z = NULL;
+        CHECK(fq_open(root, "nodeX", &x) == FQ_OK && fq_open(root, "nodeY", &y) == FQ_OK &&
+              fq_open(root, "nodeZ", &z) == FQ_OK, "세 노드 핸들");
+        if (x && y && z) {
+            char ctrl[1280];
+            fq_path(ctrl, sizeof(ctrl), root, FQ_DIR_CONTROL, NULL);
+            uint64_t now = 0;
+            fq_fs_now_ms(ctrl, "test", &now);
+            /* 죽은 보유자의 락 → Y가 내용을 읽고 stale로 판정 */
+            fq_elock dead, lx, lz;
+            CHECK(fq_election_lock(z, now, &dead) == FQ_OK, "죽을 노드가 락 획득");
+            void *seen = NULL; size_t seen_len = 0;
+            CHECK(fq_fs_read_file(dead.path, &seen, &seen_len) == FQ_OK, "Y가 stale 락 내용을 읽음");
+            /* 그 사이 X가 먼저 회수하고 새 락을 만들어 임계 구역에 들어간다 */
+            uint64_t later = now + fq_election_stale_ms() + 1000;
+            CHECK(fq_election_lock(x, later, &lx) == FQ_OK, "X가 stale 락을 회수해 획득");
+            /* 이제 Y가 판정했던 대로 회수를 진행 → X의 살아 있는 락을 옮기면 안 된다 */
+            CHECK(fq_election_reclaim(y, dead.path, seen, seen_len) == FQ_ELOCKED,
+                  "Y는 바뀐 락을 알아채고 양보");
+            free(seen);
+            CHECK(fq_election_lock(z, now, &lz) == FQ_ELOCKED, "X의 락이 그대로라 다른 노드는 대기");
+            fq_election_unlock(&lx);
+            CHECK(fq_fs_exists(lx.path) == 0, "X의 해제는 되돌려진 자기 락을 지움");
+        }
+        if (x) fq_close(x);
+        if (y) fq_close(y);
+        if (z) fq_close(z);
+    }
+
     fq_close(qa);
     fq_close(qb);
     printf("\n== 결과: %s (%d 실패) ==\n", fails ? "FAIL" : "PASS", fails);

@@ -324,7 +324,9 @@ int fq_claim(fq_queue *q, const fq_lease *lease, fq_msg **out)
              * 캐시를 채울 때마다 맨 앞에서 FQ_ERR를 낸다. attempt+1로 보내면 일시 오류는 재시도되고
              * 계속 실패하면 dead/로 격리된다. 큐는 다음 후보로 계속 흐른다. */
             void *data = NULL; size_t len = 0;
-            if (fq_fs_read_file(dst, &data, &len) != FQ_OK) {
+            int rrc = fq_fs_read_file(dst, &data, &len);
+            if (rrc == FQ_ENOENT) continue;   /* claim 직후 더 새 리더가 회수함(내가 좀비): 경합 패배와 같다 */
+            if (rrc != FQ_OK) {
                 if (fq_requeue_inflight(q, inf_name, NULL) != FQ_OK) {
                     fq_fs_rename(dst, src);   /* 그것도 안 되면 원래 자리로(내 token의 고아 방지) */
                     return FQ_ERR;

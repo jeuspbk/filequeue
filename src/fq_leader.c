@@ -90,7 +90,8 @@ static int write_leader_info(fq_queue *q, uint64_t token, uint64_t expiry)
  * 사라져 세 번째 노드가 동시에 임계 구역에 들어간다(같은 leader.info를 읽고 같은 token을 발급).
  * 선출 중 크래시로 남은 stale lock은 회수한다. unlink로 치우면 두 노드가 동시에 회수할 때
  * A가 지우고 새로 만든 락을 B가 다시 지워 둘 다 임계 구역에 들어간다. 대신 고유 이름으로
- * rename한다: rename은 한 쪽만 성공하므로 그 노드만 새 락을 만들고, 진 쪽은 양보한다. */
+ * rename한다: rename은 한 쪽만 성공하므로 그 노드만 새 락을 만들고, 진 쪽은 양보한다. rename한 것이 판정한
+ * 그 락인지는 fq_election_reclaim이 확인한다. */
 int fq_election_lock(fq_queue *q, uint64_t now, fq_elock *lk)
 {
     fq_path(lk->path, sizeof(lk->path), q->root, FQ_DIR_CONTROL, "election.lock");
@@ -101,20 +102,50 @@ int fq_election_lock(fq_queue *q, uint64_t now, fq_elock *lk)
 
     int rc = fq_fs_create_new_data(lk->path, lk->owner, olen);
     if (rc == FQ_EEXIST) {
+        /* 내용을 먼저 읽고 그다음 mtime을 본다. 반대 순서면 stat한 뒤 다른 쪽이 회수하고 새로 만든 락의
+         * 내용을 읽어, 판정한 락과 읽은 내용이 어긋난 채 회수가 "확인"된다. */
+        void *seen = NULL; size_t seen_len = 0;
         uint64_t lock_mtime = 0;
-        if (fq_fs_mtime_ms(lk->path, &lock_mtime) == FQ_OK &&
-            now > lock_mtime + fq_election_stale_ms()) {
-            char sgid[64], stale[1536];
-            fq_gen_id(sgid, sizeof(sgid));
-            snprintf(stale, sizeof(stale), "%s.stale-%s-%s", lk->path, q->node_id, sgid);
-            if (fq_fs_rename(lk->path, stale) == FQ_OK) {
-                fq_fs_unlink(stale);
+        if (fq_fs_read_file(lk->path, &seen, &seen_len) == FQ_OK) {
+            if (fq_fs_mtime_ms(lk->path, &lock_mtime) == FQ_OK &&
+                now > lock_mtime + fq_election_stale_ms() &&
+                fq_election_reclaim(q, lk->path, seen, seen_len) == FQ_OK)
                 rc = fq_fs_create_new_data(lk->path, lk->owner, olen);
-            }
+            free(seen);
         }
         if (rc == FQ_EEXIST) return FQ_ELOCKED;
     }
     return rc == FQ_OK ? FQ_OK : FQ_ERR;
+}
+
+/* stale로 판정한 락(내용 seen)을 치운다. rename은 경로에 지금 있는 파일을 옮기므로, 판정과 rename 사이에
+ * 다른 노드가 같은 락을 회수하고 새 락을 만들었다면 그 살아 있는 락을 옮겨 버린다. 그대로 두면 그 노드와
+ * 내가 동시에 임계 구역에 들어가 같은 token을 발급한다. 그래서 옮긴 파일이 판정한 그 락(보유자 표시는
+ * 획득마다 유일)인지 확인하고, 아니면 같은 내용으로 원자적 배타 생성해 되돌린 뒤 양보한다(그 보유자의
+ * 해제는 표시가 같으므로 그대로 동작한다). 되돌리는 동안의 ms 단위 틈은 남는다.
+ * FQ_OK = 치웠음(새로 만들어도 됨), FQ_ELOCKED = 다른 쪽이 먼저 회수했거나 살아 있는 락이었음. */
+int fq_election_reclaim(fq_queue *q, const char *path, const void *seen, size_t seen_len)
+{
+    char sgid[64], stale[1536];
+    fq_gen_id(sgid, sizeof(sgid));
+    snprintf(stale, sizeof(stale), "%s.stale-%s-%s", path, q->node_id, sgid);
+    if (fq_fs_rename(path, stale) != FQ_OK) return FQ_ELOCKED;
+
+    void *got = NULL; size_t got_len = 0;
+    int rrc = fq_fs_read_file(stale, &got, &got_len);
+    if (rrc == FQ_OK && got_len == seen_len && memcmp(got, seen, seen_len) == 0) {
+        free(got);
+        fq_fs_unlink(stale);
+        return FQ_OK;
+    }
+    if (rrc == FQ_OK) {
+        fq_fs_create_new_data(path, got, got_len);   /* EEXIST면 이미 다른 락이 있다: 어느 쪽이든 양보 */
+        free(got);
+        fq_fs_unlink(stale);
+    } else {
+        fq_fs_rename_noreplace(stale, path);          /* 내용을 모르면 파일째 되돌린다(최선). 실패분은 fq_gc */
+    }
+    return FQ_ELOCKED;
 }
 
 /* 내 표시가 그대로일 때만 지운다. 다르면(내가 멈춘 사이 회수되어 남이 새로 만든 락) 그대로 둔다.

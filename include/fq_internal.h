@@ -96,6 +96,9 @@ typedef struct {
 } fq_elock;
 int      fq_election_lock(fq_queue *q, uint64_t now, fq_elock *lk);
 void     fq_election_unlock(const fq_elock *lk);
+/* stale로 판정한 락(판정 직전에 읽은 내용 seen)을 치운다. 그 사이 바뀐 살아 있는 락이면 되돌리고 양보.
+ * FQ_OK = 치웠음, FQ_ELOCKED = 양보. fq_election_lock이 쓴다(테스트가 경합을 흉내 내려고 노출). */
+int      fq_election_reclaim(fq_queue *q, const char *path, const void *seen, size_t seen_len);
 
 /* ---- 리스 인수 (fq_leader.c) ----
  * fq_acquire_leadership과 같되 election.lock이 잡혀 있으면 FQ_EEXIST(남의 유효한 리스는 FQ_ELOCKED).

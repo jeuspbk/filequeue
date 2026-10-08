@@ -101,7 +101,9 @@ fq_fs_posix.c / fq_fs_win32.c   (플랫폼 원자 연산 추상화)
   `fq_now_mono_ms`로 잰다. GC 멈춤, 절전, 긴 처리) 스스로 내려놓고 election.lock을 거쳐 다시 얻는다. 메시지 하나 처리가 리스보다 길 수 있으면
   처리 중 `fq_heartbeat(q)`를 호출할 것.
 - **election.lock stale 회수**는 unlink가 아니라 고유 이름으로 rename한 뒤 새로 만든다. unlink면
-  동시에 회수하는 두 노드가 서로의 새 락을 지워 둘 다 임계 구역에 들어간다. 락은 `fq_election_lock`/
+  동시에 회수하는 두 노드가 서로의 새 락을 지워 둘 다 임계 구역에 들어간다. rename 뒤에는 옮긴 파일이
+  판정 전에 읽은 그 락(보유자 표시 비교)인지 확인하고, 아니면 되돌린다(`fq_election_reclaim`) — 판정과 rename
+  사이에 남이 회수하고 새로 만든 살아 있는 락을 옮겼을 수 있다. 락은 `fq_election_lock`/
   `fq_election_unlock`으로만 다룰 것: 파일에 보유자 표시를 쓰고, 해제는 표시가 내 것일 때만 지운다
   (무조건 unlink하면 회수당한 뒤 깨어난 옛 보유자가 새 보유자의 락을 지워 같은 token이 두 번 발급된다).
 - **시각**: 노드 간 clock skew를 피하려 `fq_fs_now_ms`(공유 FS에 임시 파일을 만들어 mtime을 읽음)를
