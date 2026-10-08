@@ -52,6 +52,10 @@ add_executable(test_clock tests/test_clock.c)
 target_link_libraries(test_clock filequeue)
 add_test(NAME clock COMMAND test_clock)
 
+add_executable(test_order tests/test_order.c)
+target_link_libraries(test_order filequeue)
+add_test(NAME order COMMAND test_order)
+
 # 다중 프로세스 드라이버 (CLI 예제 겸 동시성/failover 테스트용)
 add_executable(fq_producer examples/fq_producer.c)
 target_link_libraries(fq_producer filequeue)

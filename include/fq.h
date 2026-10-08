@@ -157,6 +157,33 @@ int  fq_adopt(fq_queue *q, const char *path, const char *stream_key);
 int  fq_take(fq_queue *q, fq_msg *m, const char *path);
 int  fq_return(fq_queue *q, const char *path, uint32_t attempt);
 
+/* ---- 순서 지정 발행 ----
+ * fq_publish·fq_adopt는 꼬리에 넣는다(발행 시각 순). _ex는 fq_order로 자리를 고른다(NULL = 꼬리).
+ *   FQ_ORDER_TAIL  : 꼬리. 기본과 같다.
+ *   FQ_ORDER_HEAD  : 맨 앞. 꼬리 메시지 모두보다 앞이고, 맨 앞에 넣은 것끼리는 나중 것이 앞이다(LIFO).
+ *   FQ_ORDER_BEFORE: incoming을 앞에서부터 보며 before(data, len, ud)가 1을 돌려주는 첫 메시지 바로 앞.
+ *                    같은 메시지 앞에 여러 번 넣으면 넣은 순서대로 그 앞에 줄을 선다. 후보마다 파일을
+ *                    읽으므로 fq_claim_if처럼 비싸다. 그런 메시지가 없으면 FQ_EEMPTY(아무것도 바뀌지 않음.
+ *                    fq_adopt_ex는 path가 그대로 남는다 - FQ_ENOENT "이미 옮김"과 구분된다). 새 이름은 대상의 이름을 바탕으로 만들므로,
+ *                    끼워 넣은 메시지 앞에 다시 끼워 넣기를 거듭해 이름이 FQ_ORDER_NAME_MAX를 넘으면 FQ_EINVAL.
+ * 자리는 이름 정렬로만 정해진다(별도 메타파일 없음, 상태 전이는 여전히 rename 한 번).
+ * fq_claim은 나열을 캐시하므로, 다른 핸들이 맨 앞에 넣은 메시지는 그 캐시를 다 쓴 다음 나열부터 본다.
+ * fq_claim_if·fq_consume_if는 매번 나열하므로 바로 본다. 노드가 여럿이면 HEAD끼리의 순서는 각자의
+ * 발행 시각(FS 시각 기준) 순서다. fq_return은 여전히 꼬리로 되돌린다. */
+#define FQ_ORDER_TAIL     0
+#define FQ_ORDER_HEAD     1
+#define FQ_ORDER_BEFORE   2
+#define FQ_ORDER_NAME_MAX 220   /* 끼워 넣은 이름의 최대 길이(inflight 접미사를 더해도 255자 안).
+                                   네이티브 Win32(ANSI API)는 루트를 포함한 전체 경로가 260자 안이어야
+                                   하므로, 루트가 길면 그 전에 FQ_ERR로 멈춘다 */
+typedef struct {
+    int        mode;            /* FQ_ORDER_* */
+    fq_want_fn before;          /* FQ_ORDER_BEFORE: 대상 고르기 */
+    void      *ud;
+} fq_order;
+int  fq_publish_ex(fq_queue *q, const void *data, size_t len, const char *stream_key, const fq_order *order);
+int  fq_adopt_ex(fq_queue *q, const char *path, const char *stream_key, const fq_order *order);
+
 /* ---- 유지보수 ---- */
 /* 크래시 잔재 중 mtime이 tmp_max_age_ms보다 오래된 것 정리: tmp/의 모든 파일(발행 중 크래시),
  * control/의 .now-*(FS 시각 측정), leader-*.tmp(leader.info 교체 중), election.lock.stale-*.

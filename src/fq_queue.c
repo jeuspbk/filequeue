@@ -116,11 +116,18 @@ static void new_msg_name(fq_queue *q, const char *id, const char *stream_key, ch
                  (unsigned long long)now, seq, q->node_id, id);
 }
 
-static void incoming_path(fq_queue *q, const char *id, const char *stream_key, char *msg_path, size_t n)
+static int ordered_name(fq_queue *q, const char *id, const char *stream_key, const fq_order *o,
+                        char *name, size_t n);
+
+/* incoming/ 안의 새 메시지 경로. 순서 지정(o)이면 대상을 못 찾을 때 FQ_ENOENT 등. */
+static int incoming_path(fq_queue *q, const char *id, const char *stream_key, const fq_order *o,
+                         char *msg_path, size_t n)
 {
     char msg_name[512];
-    new_msg_name(q, id, stream_key, msg_name, sizeof(msg_name));
+    int rc = ordered_name(q, id, stream_key, o, msg_name, sizeof(msg_name));
+    if (rc != FQ_OK) return rc;
     fq_path(msg_path, n, q->root, FQ_DIR_INCOMING, msg_name);
+    return FQ_OK;
 }
 
 static void fsync_incoming(fq_queue *q)
@@ -134,22 +141,28 @@ static void fsync_incoming(fq_queue *q)
 
 int fq_publish(fq_queue *q, const void *data, size_t len, const char *stream_key)
 {
+    return fq_publish_ex(q, data, len, stream_key, NULL);
+}
+
+int fq_publish_ex(fq_queue *q, const void *data, size_t len, const char *stream_key, const fq_order *order)
+{
     if (stream_key && stream_key[0] && !fq_valid_ident(stream_key, FQ_STREAM_KEY_MAX))
         return FQ_EINVAL;
     char id[64];
     fq_gen_id(id, sizeof(id));
 
-    /* 1) tmp에 기록 + fsync. tmp/는 모든 발행 노드가 공유하므로 이름에 node_id를 넣어
+    /* 1) 최종 메시지명. 순서 지정이면 대상을 먼저 찾는다: 못 찾으면 아무것도 쓰지 않고 끝 */
+    char msg_path[1408];
+    int nrc = incoming_path(q, id, stream_key, order, msg_path, sizeof(msg_path));
+    if (nrc != FQ_OK) return nrc;
+
+    /* 2) tmp에 기록 + fsync. tmp/는 모든 발행 노드가 공유하므로 이름에 node_id를 넣어
      *    다른 노드와 같은 임시 파일을 덮어쓰는 일(메시지 유실)을 구조적으로 막는다. */
     char tmp_name[192], tmp_path[1408];
     snprintf(tmp_name, sizeof(tmp_name), "%s-%s.tmp", q->node_id, id);
     fq_path(tmp_path, sizeof(tmp_path), q->root, FQ_DIR_TMP, tmp_name);
     int wrc = fq_fs_write_sync(tmp_path, data, len);   /* 실패 시 tmp는 이미 지워짐 */
     if (wrc != FQ_OK) return wrc;                       /* FQ_ENOSPC 또는 FQ_ERR */
-
-    /* 2) 최종 메시지명 */
-    char msg_path[1408];
-    incoming_path(q, id, stream_key, msg_path, sizeof(msg_path));
 
     /* 3) 원자적 rename (대상 이름은 구조상 유일) */
     int rc = fq_fs_rename(tmp_path, msg_path);
@@ -164,12 +177,18 @@ int fq_publish(fq_queue *q, const void *data, size_t len, const char *stream_key
 
 int fq_adopt(fq_queue *q, const char *path, const char *stream_key)
 {
+    return fq_adopt_ex(q, path, stream_key, NULL);
+}
+
+int fq_adopt_ex(fq_queue *q, const char *path, const char *stream_key, const fq_order *order)
+{
     if (stream_key && stream_key[0] && !fq_valid_ident(stream_key, FQ_STREAM_KEY_MAX))
         return FQ_EINVAL;
     char id[64];
     fq_gen_id(id, sizeof(id));
     char msg_path[1408];
-    incoming_path(q, id, stream_key, msg_path, sizeof(msg_path));
+    int nrc = incoming_path(q, id, stream_key, order, msg_path, sizeof(msg_path));
+    if (nrc != FQ_OK) return nrc;            /* 대상 없음 등: path는 그대로 */
     int rc = fq_fs_rename(path, msg_path);   /* 원본이 없으면 FQ_ENOENT: 이미 옮겨짐 */
     if (rc != FQ_OK) return rc;
     fsync_incoming(q);
@@ -391,6 +410,97 @@ int fq_claim_if(fq_queue *q, const fq_lease *lease, fq_want_fn want, void *ud, f
     }
     strvec_free(&sv);
     return result;
+}
+
+/* ---- 순서 지정 이름 (fq.h "순서 지정 발행") ----
+ * 이름 = <정렬 키>-<producer>-<id>[.<stream>].msg. 자리는 이름 정렬로만 정한다.
+ * 정렬 키 마디 = <16자리>-<10자리>(28자 중 27자 + 구분자).
+ *   꼬리  : <ms>-<seq>                                   (new_msg_name)
+ *   HEAD  : !<9..9 - ms>-<2^32-1 - seq>   '!'(0x21)는 숫자보다 앞이라 꼬리 모두보다 앞이고, 뒤집은
+ *           시각·seq 때문에 나중에 넣은 것이 앞이다.
+ *   BEFORE: <대상의 정렬 키>!<ms>-<seq>   대상과는 정렬 키가 끝나는 자리에서 '!' < '-'라 바로 앞이고,
+ *           대상보다 앞선 메시지는 그 전 글자에서 이미 더 작다. 같은 대상 앞에 먼저 끼운 것은 시각이
+ *           작아 그 앞이다. 끼울 때마다 28자씩만 는다(producer·id는 끝에 한 번).
+ * node_id·stream에는 '!'가 없으므로(fq_valid_ident) '!'는 정렬 키 안에서만 쓰인다. */
+
+static int digits(const char *s, size_t n)
+{
+    for (size_t i = 0; i < n; i++)
+        if (s[i] < '0' || s[i] > '9') return 0;
+    return 1;
+}
+
+/* name의 정렬 키 길이(위 형식). 이 큐가 만든 이름이 아니면 0. */
+static size_t sort_key_len(const char *name)
+{
+    size_t len = strlen(name), pos = name[0] == '!' ? 1 : 0;
+    for (;;) {
+        if (len < pos + 27 || !digits(name + pos, 16) || name[pos + 16] != '-' || !digits(name + pos + 17, 10))
+            return 0;
+        pos += 27;
+        if (name[pos] == '-') return pos;
+        if (name[pos] != '!') return 0;
+        pos++;
+    }
+}
+
+/* incoming을 앞에서부터 보며 want가 1인 첫 메시지의 이름. FQ_OK / FQ_EEMPTY / FQ_ERR. */
+static int find_target(fq_queue *q, fq_want_fn want, void *ud, char *name, size_t n)
+{
+    char inc_dir[1280];
+    fq_path(inc_dir, sizeof(inc_dir), q->root, FQ_DIR_INCOMING, NULL);
+    strvec sv = {0};
+    if (fq_fs_list(inc_dir, collect_cb, &sv) != FQ_OK) { strvec_free(&sv); return FQ_ERR; }
+    if (sv.n) qsort(sv.v, sv.n, sizeof(char *), cmp_str);
+    int result = FQ_EEMPTY;
+    for (size_t i = 0; i < sv.n && result == FQ_EEMPTY; i++) {
+        char src[1408];
+        fq_path(src, sizeof(src), q->root, FQ_DIR_INCOMING, sv.v[i]);
+        void *data = NULL; size_t len = 0;
+        if (fq_fs_read_file(src, &data, &len) != FQ_OK) continue;   /* 사라짐·읽기 실패: 대상 아님 */
+        if (want(data, len, ud)) {
+            snprintf(name, n, "%s", sv.v[i]);
+            result = FQ_OK;
+        }
+        free(data);
+    }
+    strvec_free(&sv);
+    return result;
+}
+
+static int ordered_name(fq_queue *q, const char *id, const char *stream_key, const fq_order *o,
+                        char *name, size_t n)
+{
+    if (!o || o->mode == FQ_ORDER_TAIL) {
+        new_msg_name(q, id, stream_key, name, n);
+        return FQ_OK;
+    }
+    if (o->mode == FQ_ORDER_HEAD) {
+        uint64_t inv_ms = 9999999999999999ULL - msg_clock_ms(q);
+        uint32_t inv_seq = 4294967295u - ++q->seq;
+        if (stream_key && stream_key[0])
+            snprintf(name, n, "!%016llu-%010u-%s-%s.%s.msg",
+                     (unsigned long long)inv_ms, inv_seq, q->node_id, id, stream_key);
+        else
+            snprintf(name, n, "!%016llu-%010u-%s-%s.msg", (unsigned long long)inv_ms, inv_seq, q->node_id, id);
+        claim_cache_clear(q);                            /* 이 핸들의 캐시가 새 맨 앞을 놓치지 않게 */
+        return FQ_OK;
+    }
+    if (o->mode != FQ_ORDER_BEFORE || !o->before) return FQ_EINVAL;
+    char target[512];
+    int rc = find_target(q, o->before, o->ud, target, sizeof(target));
+    if (rc != FQ_OK) return rc;
+    size_t kl = sort_key_len(target);
+    if (!kl) return FQ_EINVAL;                           /* 이 큐가 만든 이름이 아님 */
+    char tail[512];
+    new_msg_name(q, id, stream_key, tail, sizeof(tail)); /* <ms>-<seq>-<producer>-<id>... */
+    size_t tl = strlen(tail), total = kl + 1 + tl;
+    if (total > FQ_ORDER_NAME_MAX || total >= n) return FQ_EINVAL;
+    memcpy(name, target, kl);
+    name[kl] = '!';
+    memcpy(name + kl + 1, tail, tl + 1);
+    claim_cache_clear(q);
+    return FQ_OK;
 }
 
 int fq_release(fq_queue *q, fq_msg *m)

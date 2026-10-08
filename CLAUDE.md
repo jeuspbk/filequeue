@@ -85,6 +85,9 @@ fq_fs_posix.c / fq_fs_win32.c   (플랫폼 원자 연산 추상화)
 - `node_id`·`stream_key`는 `fq_valid_ident`로 검증한다(`[A-Za-z0-9._-]`, `__` 금지, 어기면 `FQ_EINVAL`).
   이 규칙이 `__t<token>`·`.a<N>` 파싱과 leader.info의 공백 구분 포맷을 지탱하므로 완화하지 말 것.
 - 메시지명: `<epoch_ms>-<seq>-<producer>-<id>[.<stream>].msg` — 앞쪽 시간으로 best-effort FIFO 정렬.
+  `fq_publish_ex`/`fq_adopt_ex`의 순서 지정은 앞쪽 **정렬 키**만 바꾼다: HEAD `!<뒤집은 ms>-<뒤집은 seq>`,
+  BEFORE `<대상의 정렬 키>!<ms>-<seq>` (`DESIGN.md` §1 "순서 지정"). 정렬 키 파싱은 `sort_key_len` 한 곳.
+  node_id·stream_key 문자 규칙에 `!`를 넣지 말 것 — 정렬 키 구분자다.
 - inflight: `<메시지명>__t<token>` — `token`은 fencing용 리더 토큰.
 - 재시도: `incoming`으로 되돌릴 때 `.a<N>` 접미사로 attempt 카운트. `FQ_MAX_ATTEMPTS` 초과 시 `dead/`.
 - 이 이름 규칙 파싱은 `fq_util.c`의 `fq_parse_attempt` / `fq_parse_inflight`에 집중되어 있다.
