@@ -1,0 +1,18 @@
+# 변이 목록: <라벨>#<파일>#<원문(정확히 일치, 여러 곳이면 모두)>#<바꿀 내용>
+# 방어 로직을 하나씩 끄고 테스트가 잡는지 본다. 원문이 코드에서 사라지면 '적용 실패'로 표시된다.
+M01 fencing 무시: 새 token의 inflight도 회수#src/fq_leader.c#if (token > c->lease->token) return 0;#if (0) return 0;
+M02 하트비트 token 확인 생략#src/fq_leader.c#if (cur.token != lease->token || !is_mine(q, &cur) ||#if (!is_mine(q, &cur) ||
+M03 인수 시 락 안 재검증 생략#src/fq_leader.c#if (cur.expiry > now && is_other(q, &cur, same_node)) {#if (0) {
+M04 들고 있는 메시지도 회수#src/fq_leader.c#if (fq_is_held(c->q, name)) return 0;#;
+M05 선출 락 해제 시 보유자 확인 생략#src/fq_leader.c#if (mine) fq_fs_unlink(lk->path);#(void)mine; fq_fs_unlink(lk->path);
+M06 stale 락 회수 뒤 내용 확인 생략#src/fq_leader.c#if (rrc == FQ_OK && got_len == seen_len && memcmp(got, seen, seen_len) == 0) {#if (1) {
+M07 내 리스 판정에서 instance 생략#src/fq_leader.c#return strcmp(li->id, q->node_id) == 0 && strcmp(li->instance, q->instance) == 0;#return strcmp(li->id, q->node_id) == 0;
+M08 token high-water에서 inflight 무시#src/fq_leader.c#int rc = fq_fs_list(inf_dir, max_token_cb, &mx);#int rc = FQ_OK; (void)max_token_cb;
+M09 리스 자체 만료 감지 제거#src/fq_consume.c#if (now >= q->lead_last_renew_ms + fq_lease_ms())#if (0)
+M10 leader.info ENOENT 재시도 제거#src/fq_util.c#for (int i = 0; rc == FQ_ENOENT && i < FQ_REPLACE_READ_RETRIES; i++) {#for (int i = 0; 0; i++) {
+M11 DLQ 한도 무시(dead로 안 감)#src/fq_queue.c#int dead = attempt + 1 >= FQ_MAX_ATTEMPTS;#int dead = 0;
+M12 claim 긴 이름 격리 대신 오류#src/fq_queue.c#if (quarantine_incoming(q, name) != FQ_OK) return FQ_ERR;#return FQ_ERR;
+M13 DLQ 이름 검증 제거#src/fq_queue.c#if (!valid_entry_name(name)) return FQ_EINVAL;#if (!name) return FQ_EINVAL;
+M14 claim 뒤 읽기 실패를 시도로 안 침#src/fq_queue.c#if (fq_requeue_inflight(q, inf_name, NULL) != FQ_OK) {#if (1) {
+M15 stale 락 회수 안 함#src/fq_leader.c#now > lock_mtime + fq_election_stale_ms() &&#0 &&
+M16 긴 루트 검사 제거(Win32 전용: POSIX에선 놓침이 정상, 네이티브 test_consume [10]이 잡음)#src/fq_queue.c#if (!fq_fs_path_fits(probe, 1 + 65 + strlen(q->node_id) + (255 - FQ_MSG_NAME_MAX))) {#if (0) {

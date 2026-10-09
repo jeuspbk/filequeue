@@ -104,6 +104,10 @@ int      fq_election_reclaim(fq_queue *q, const char *path, const void *seen, si
  * fq_acquire_leadership과 같되 election.lock이 잡혀 있으면 FQ_EEXIST(남의 유효한 리스는 FQ_ELOCKED).
  * same_node면 같은 node_id의 다른 instance가 쓴 리스도 만료를 기다리지 않고 인수한다(fq_takeover). */
 int      fq_acquire_lease(fq_queue *q, fq_lease *lease, int same_node);
+/* 테스트 훅: fq_acquire_lease가 락 밖에서 리스 만료를 확인한 뒤, election.lock을 잡기 전에 부른다(NULL이면 없음).
+ * 그 틈에 다른 노드가 인수를 마치는 경합은 실제로는 스케줄링 지연이 있어야 열려 스레드로는 재현되지 않는다.
+ * 테스트가 이 틈에 다른 핸들의 인수를 끼워 넣어 락 안 재검증을 결정적으로 검사한다. 운영 코드는 건드리지 말 것. */
+extern void (*fq_test_hook_before_elock)(fq_queue *q);
 
 /* ---- 실패한 inflight 재큐잉 (fq_queue.c) ----
  * inflight/<name>을 실패한 시도 한 번으로 처리: attempt+1로 incoming/<base>.a<N>, 한도에 닿으면

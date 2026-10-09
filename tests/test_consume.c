@@ -26,6 +26,18 @@ static int fails = 0;
     else      { printf("  [FAIL] %s\n", msg); fails++; } \
 } while (0)
 
+/* [13] fq_test_hook_before_elock: 락 밖 만료 확인과 락 획득 사이에 다른 핸들의 인수를 한 번 끼워 넣는다 */
+static fq_queue *hook_other;
+static fq_lease  hook_lease;
+static int       hook_rc = FQ_ERR;
+static void hook_acquire(fq_queue *q)
+{
+    (void)q;
+    fq_queue *o = hook_other;
+    hook_other = NULL;                       /* 끼워 넣은 인수 안에서 다시 부르지 않게 */
+    if (o) hook_rc = fq_acquire_leadership(o, &hook_lease);
+}
+
 int main(int argc, char **argv)
 {
     const char *root = argc > 1 ? argv[1] : "_consume_test";
@@ -275,6 +287,69 @@ int main(int argc, char **argv)
         CHECK(fq_open(broot, "nodeW", &qw) == FQ_EINVAL && !qw, "Win32: 큐로 쓸 수 없는 긴 루트는 fq_open FQ_EINVAL");
         if (qw) fq_close(qw);
 #endif
+    }
+
+    printf("[11] fencing: 더 새 리더(더 큰 token)의 inflight는 회수하지 않음 (좀비가 새 리더의 작업을 빼앗지 않게)\n");
+    {
+        char froot[1100], fpath[1600];
+        snprintf(froot, sizeof(froot), "%s/fence", root);
+        fq_queue *qz = NULL;
+        CHECK(fq_open(froot, "nodeZ", &qz) == FQ_OK && qz, "fq_open (별도 큐)");
+        fq_lease lz;
+        if (qz && fq_acquire_leadership(qz, &lz) == FQ_OK) {
+            /* 더 새 리더가 claim해 처리 중인 메시지(token = 내 token + 5) */
+            snprintf(fpath, sizeof(fpath), "%s/inflight/0000000000000001-0000000001-nodeN-x.msg__t%llu",
+                     froot, (unsigned long long)(lz.token + 5));
+            fq_fs_write_sync(fpath, "new", 3);
+            CHECK(fq_recover_stale(qz, &lz) == FQ_OK, "fq_recover_stale");
+            CHECK(fq_fs_exists(fpath) == 1, "더 새 token의 inflight는 그대로");
+            fq_fs_unlink(fpath);
+            fq_release_leadership(qz, &lz);
+        }
+        if (qz) fq_close(qz);
+    }
+
+    printf("[12] 하트비트는 token까지 확인: 같은 핸들이 다시 얻은 뒤 옛 리스로 갱신하면 ENOLEADER\n");
+    {
+        char troot[1100];
+        snprintf(troot, sizeof(troot), "%s/tok", root);
+        fq_queue *qt = NULL;
+        CHECK(fq_open(troot, "nodeT", &qt) == FQ_OK && qt, "fq_open (별도 큐)");
+        fq_lease l1, l2;
+        if (qt && fq_acquire_leadership(qt, &l1) == FQ_OK && fq_acquire_leadership(qt, &l2) == FQ_OK) {
+            CHECK(l2.token == l1.token + 1, "같은 핸들 재획득 (token +1)");
+            /* 옛 리스로 갱신이 통과하면 leader.info의 token이 되돌아가 같은 token이 다시 발급된다 */
+            CHECK(fq_renew_lease(qt, &l1) == FQ_ENOLEADER, "옛 리스 갱신은 FQ_ENOLEADER");
+            CHECK(fq_renew_lease(qt, &l2) == FQ_OK, "새 리스 갱신은 성공 (token이 되돌아가지 않음)");
+            fq_release_leadership(qt, &l2);
+        } else {
+            CHECK(0, "리더십 획득");
+        }
+        if (qt) fq_close(qt);
+    }
+
+    printf("[13] 인수 경합: 락 밖 확인 뒤 락을 잡기 전에 다른 노드가 인수하면, 락 안 재검증으로 양보\n");
+    {
+        char rroot[1100];
+        snprintf(rroot, sizeof(rroot), "%s/reval", root);
+        fq_queue *r1 = NULL, *r2 = NULL;
+        CHECK(fq_open(rroot, "nodeR1", &r1) == FQ_OK && fq_open(rroot, "nodeR2", &r2) == FQ_OK,
+              "fq_open 두 노드 (별도 큐)");
+        if (r1 && r2) {
+            hook_other = r2;
+            fq_test_hook_before_elock = hook_acquire;
+            fq_lease l1;
+            int rc1 = fq_acquire_leadership(r1, &l1);   /* 만료 확인 → (틈: r2가 인수) → 락 → 재검증 */
+            fq_test_hook_before_elock = NULL;
+            CHECK(hook_rc == FQ_OK, "그 틈에 다른 노드가 인수함");
+            CHECK(rc1 == FQ_ELOCKED, "재검증으로 양보 (둘 다 리더가 되지 않음)");
+            if (rc1 == FQ_OK) fq_release_leadership(r1, &l1);
+            CHECK(hook_rc == FQ_OK && fq_renew_lease(r2, &hook_lease) == FQ_OK,
+                  "먼저 인수한 노드의 리스는 그대로 (덮어쓰이지 않음)");
+            if (hook_rc == FQ_OK) fq_release_leadership(r2, &hook_lease);
+        }
+        if (r1) fq_close(r1);
+        if (r2) fq_close(r2);
     }
 
     fq_close(qa);

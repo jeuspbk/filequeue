@@ -192,6 +192,8 @@ static int is_other(const fq_queue *q, const leader_info *li, int same_node)
     return !(same_node && strcmp(li->id, q->node_id) == 0);
 }
 
+void (*fq_test_hook_before_elock)(fq_queue *q) = NULL;
+
 int fq_acquire_lease(fq_queue *q, fq_lease *lease, int same_node)
 {
     char ctrl[1280];
@@ -214,6 +216,8 @@ int fq_acquire_lease(fq_queue *q, fq_lease *lease, int same_node)
     /* 유효한 다른 리더가 살아있으면 양보 */
     if (other && cur.expiry > now)
         return FQ_ELOCKED;
+
+    if (fq_test_hook_before_elock) fq_test_hook_before_elock(q);   /* 테스트 전용(fq_internal.h) */
 
     /* 인수 시도: election.lock 을 배타 생성으로 획득 (직렬화) */
     fq_elock lk;
