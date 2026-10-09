@@ -163,6 +163,20 @@ int main(int argc, char **argv)
         CHECK(strcmp(got, want) == 0, got);
     }
 
+    printf("[7] 나열 캐시가 차 있을 때 같은 핸들이 맨 앞에 넣으면 바로 다음에 나온다\n");
+    {
+        pub(q, "c1", FQ_ORDER_TAIL, NULL);
+        pub(q, "c2", FQ_ORDER_TAIL, NULL);
+        pub(q, "c3", FQ_ORDER_TAIL, NULL);
+        fq_msg *m = NULL;
+        CHECK(fq_consume(q, &m) == FQ_OK && m && m->len == 2 && memcmp(m->data, "c1", 2) == 0,
+              "c1 (fq_claim의 캐시에 c2 c3가 남음)");
+        if (m) fq_ack(q, m);
+        CHECK(pub(q, "hx", FQ_ORDER_HEAD, NULL) == FQ_OK, "hx 맨 앞");
+        drain(q, got, sizeof(got));
+        CHECK(strcmp(got, "hx c2 c3") == 0, got);
+    }
+
     fq_close(q);
     printf(fails ? "== FAIL (%d) ==\n" : "== OK ==\n", fails);
     return fails ? 1 : 0;

@@ -16,3 +16,19 @@ M13 DLQ 이름 검증 제거#src/fq_queue.c#if (!valid_entry_name(name)) return 
 M14 claim 뒤 읽기 실패를 시도로 안 침#src/fq_queue.c#if (fq_requeue_inflight(q, inf_name, NULL) != FQ_OK) {#if (1) {
 M15 stale 락 회수 안 함#src/fq_leader.c#now > lock_mtime + fq_election_stale_ms() &&#0 &&
 M16 긴 루트 검사 제거(Win32 전용: POSIX에선 놓침이 정상, 네이티브 test_consume [10]이 잡음)#src/fq_queue.c#if (!fq_fs_path_fits(probe, 1 + 65 + strlen(q->node_id) + (255 - FQ_MSG_NAME_MAX))) {#if (0) {
+N01 HEAD 발행이 claim 캐시를 무효화 안 함#src/fq_queue.c#claim_cache_clear(q);                            /* 이 핸들의 캐시가 새 맨 앞을 놓치지 않게 */#;
+N02 fq_release가 claim 캐시를 무효화 안 함#src/fq_queue.c#claim_cache_clear(q);                               /* 되돌린 메시지가 다시 맨 앞 후보 */#;
+N03 fq_redrive가 claim 캐시를 무효화 안 함#src/fq_queue.c#claim_cache_clear(q);                                /* 오래된 시각이라 캐시보다 앞일 수 있다 */#;
+N04 fq_take가 path를 덮어씀#src/fq_queue.c#int rc = fq_fs_rename_noreplace(src, path);#int rc = fq_fs_rename(src, path);
+N05 claim 접미사 못 붙일 긴 이름 발행 허용#src/fq_queue.c#if (strlen(msg_name) > FQ_MSG_NAME_MAX) return FQ_EINVAL;#;
+N06 식별자 "__" 허용#src/fq_util.c#if (c == '_' && p[1] == '_') return 0;#;
+N07 fq_close가 리더십 반납 안 함#src/fq_queue.c#if (q->lead_held) fq_release_leadership(q, &q->lead_lease);#;
+N08 fq_msg_free가 들고 있는 목록에서 안 뺌(해제도 안 함: 고아가 영원히 "처리 중")#src/fq_queue.c#if (q->held[i] == m) { q->held[i] = q->held[--q->held_n]; break; }#if (q->held[i] == m) return;
+N09 내 token의 고아 회수 안 함#src/fq_leader.c#if (token > c->lease->token) return 0;#if (token >= c->lease->token) return 0;
+N10 gc가 control/의 살아 있는 파일도 지움#src/fq_queue.c#if (strcmp(c->sub, FQ_DIR_CONTROL) == 0 &&#if (0 &&
+N11 gc가 나이와 무관하게 지움#src/fq_queue.c#mt < c->cutoff#1
+N12 메시지 시각 단조 보정 제거#src/fq_queue.c#if (now < q->last_msg_ms) now = q->last_msg_ms;#;
+N13 claim_if 읽기 실패를 시도로 안 침#src/fq_queue.c#if (mrc == FQ_OK && fq_requeue_inflight(q, inf_name, NULL) != FQ_OK)#if (mrc == FQ_OK)
+N14 BEFORE 이름 길이 한도 제거(등가 변이: 끼울 때마다 28자라 FQ_MSG_NAME_MAX 228과 같은 깊이에서 멈춤 → 놓침이 정상)#src/fq_queue.c#if (total > FQ_ORDER_NAME_MAX || total >= n) return FQ_EINVAL;#if (total >= n) return FQ_EINVAL;
+N15 일반 파일이 아닌 항목도 읽음(디렉터리를 빈 메시지로)#src/fq_fs_posix.c#if (!S_ISREG(st.st_mode)) { close(fd); return FQ_ERR; }#;
+N16 메시지 시각에 FS 시각 오프셋 미적용(한 머신에선 FS 시각 = 로컬 시계라 놓침이 정상, 교차 머신 실측으로 검증)#src/fq_queue.c#q->clock_offset_ms = (int64_t)fs_now - (int64_t)wall;#q->clock_offset_ms = 0; (void)fs_now;

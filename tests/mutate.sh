@@ -28,6 +28,6 @@ grep -v '^#' "$LIST" | while IFS='#' read -r label file from to; do
     timeout 120 $B/$t.exe $R > $M/$t.log 2>&1 || caught="$caught $t"
   done
   timeout 300 bash $T/tests/test_concurrency.sh $B/fq_producer.exe $B/fq_consumer.exe > $M/conc.log 2>&1 \
-    || caught="$caught concurrency($(grep -c FAIL $M/conc.log))"
+    || { caught="$caught concurrency($(grep -c FAIL $M/conc.log))"; cp $M/conc.log "$M/conc_${label%% *}.log"; }
   echo "$label ::${caught:- 놓침}" | tee -a $OUT
 done

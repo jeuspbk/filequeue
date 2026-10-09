@@ -67,11 +67,13 @@ export FQ_LEASE_MS_OVERRIDE=1500
 
 # nodeX 기동(활성 리더가 되어 소비 시작) 후, 메시지를 처리했지만 ack하기 전에 강제 종료한다.
 # 시간으로만 맞추면(sleep 후 kill) ack 직후에 죽어 inflight가 비어 회수 경로를 전혀 밟지 않고도 통과할 수
-# 있었다. 처리 뒤 ack 전 대기(FQ_EXAMPLE_ACK_DELAY_MS)를 주고, 처리 2건 이상 + inflight 점유를 확인한 뒤 죽인다.
-FQ_EXAMPLE_ACK_DELAY_MS=100 "$CONSUMER" "$ROOT" nodeX "$WORK/bX.log" 60000 2>"$WORK/bX.err" &
+# 있었다. 처리 뒤 ack 전 대기(FQ_EXAMPLE_ACK_DELAY_MS)를 주고, 처리 1건 이상 + inflight 점유를 확인한 뒤 죽인다.
+# 대기는 확인(Cygwin에서 cat·ls fork에 수십 ms)보다 훨씬 길어야 한다: 100ms일 때 확인 직후 ack가 끝나
+# inflight가 빈 채 죽이는 경우가 있었다(6회 중 1회). 리스(1.5s)보다는 짧게.
+FQ_EXAMPLE_ACK_DELAY_MS=1000 "$CONSUMER" "$ROOT" nodeX "$WORK/bX.log" 60000 2>"$WORK/bX.err" &
 PID=$!
 for _ in $(seq 1 200); do        # 최대 약 10초
-  if [ "$(total_count "$WORK/bX.log")" -ge 2 ] && [ "$(ls "$ROOT/inflight" 2>/dev/null | grep -c .)" -ge 1 ]; then break; fi
+  if [ "$(total_count "$WORK/bX.log")" -ge 1 ] && [ "$(ls "$ROOT/inflight" 2>/dev/null | grep -c .)" -ge 1 ]; then break; fi
   sleep 0.05
 done
 kill -9 "$PID" 2>/dev/null

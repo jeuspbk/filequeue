@@ -352,6 +352,28 @@ int main(int argc, char **argv)
         if (r2) fq_close(r2);
     }
 
+    printf("[14] ack 없이 해제한 메시지는 이 핸들의 다음 하트비트가 고아로 회수한다\n");
+    {
+        char oroot[1100];
+        snprintf(oroot, sizeof(oroot), "%s/orphan", root);
+        fq_queue *qo = NULL;
+        CHECK(fq_open(oroot, "nodeO", &qo) == FQ_OK && qo, "fq_open (별도 큐)");
+        if (qo) {
+            fq_msg *m = NULL;
+            while (fq_consume(qo, &m) == FQ_OK) fq_ack(qo, m);   /* 이전 실행의 잔여 */
+            fq_publish(qo, "orph", 4, NULL);
+            m = NULL;
+            CHECK(fq_consume(qo, &m) == FQ_OK && m, "claim");
+            fq_msg_free(m);                       /* ack·nack 없이 해제: 이제 아무도 들고 있지 않다 */
+            CHECK(fq_heartbeat(qo) == FQ_OK, "하트비트(회수 포함)");
+            m = NULL;
+            CHECK(fq_consume(qo, &m) == FQ_OK && m && m->len == 4 && m->attempt == 1,
+                  "같은 리더가 다시 전달 (attempt 1, 리더 교체를 기다리지 않음)");
+            if (m) fq_ack(qo, m);
+            fq_close(qo);
+        }
+    }
+
     fq_close(qa);
     fq_close(qb);
     printf("\n== 결과: %s (%d 실패) ==\n", fails ? "FAIL" : "PASS", fails);

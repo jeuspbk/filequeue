@@ -179,6 +179,12 @@ int main(int argc, char **argv)
         CHECK(left == 0, "잔재가 남지 않음");
         fq_path(p, sizeof(p), root, FQ_DIR_CONTROL, "leader.info");
         CHECK(fq_fs_exists(p) == 1, "leader.info는 보존");
+
+        /* 임계 나이보다 젊은 것은 남긴다: 진행 중인 발행의 tmp를 지우면 그 발행이 실패한다 */
+        fq_path(p, sizeof(p), root, FQ_DIR_TMP, "inprogress.tmp");
+        fq_fs_write_sync(p, "x", 1);
+        CHECK(fq_gc(q, 10 * 60 * 1000) == 0 && fq_fs_exists(p) == 1, "임계 나이보다 젊은 tmp는 보존");
+        fq_fs_unlink(p);
     }
 
     /* [7] 리더십 경합 회귀: 같은 node_id 두 핸들, 갱신의 락 직렬화, token high-water */
