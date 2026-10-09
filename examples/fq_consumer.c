@@ -6,10 +6,11 @@
  *   - 소비한 각 메시지의 페이로드를 logfile에 한 줄씩 append (at-least-once 검증용).
  *   - run_ms 동안 동작 후 종료. 리더가 아니면(대기) 짧게 쉬며 재시도.
  *
- * 테스트에서 FQ_LEASE_MS_OVERRIDE 환경변수로 리스를 단축할 수 있다.
+ * 테스트에서 FQ_LEASE_MS_OVERRIDE 환경변수로 리스를 단축할 수 있다. FQ_EXAMPLE_ACK_DELAY_MS는 처리 뒤 ack 전
+ * 대기(ms)로, failover 테스트가 처리 중인 상태에서 강제 종료하는 데 쓴다.
  */
 #include "fq.h"
-#include "fq_internal.h"   /* fq_now_wall_ms, fq_lease_ms */
+#include "fq_internal.h"   /* fq_now_mono_ms, fq_now_wall_ms, fq_lease_ms */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -33,6 +34,10 @@ int main(int argc, char **argv)
     const char *node_id = argv[2];
     const char *logpath = argv[3];
     uint64_t    run_ms  = strtoull(argv[4], NULL, 10);
+    /* 테스트 훅: 처리(로그 기록) 뒤 ack 전에 이만큼 쉰다. failover 테스트가 "처리했지만 ack 전" 상태에서
+     * 강제 종료해 회수·재전달 경로를 확실히 밟게 한다. */
+    const char *dly = getenv("FQ_EXAMPLE_ACK_DELAY_MS");
+    int ack_delay = dly ? atoi(dly) : 0;
 
     fq_queue *q = NULL;
     if (fq_open(root, node_id, &q) != FQ_OK) { fprintf(stderr, "fq_open 실패\n"); return 1; }
@@ -41,27 +46,37 @@ int main(int argc, char **argv)
     if (!log) { fprintf(stderr, "logfile 열기 실패\n"); fq_close(q); return 1; }
 
     /* 하트비트 주기 = 리스/3 (최소 50ms). 리스 만료 전에 갱신되도록. */
-    uint64_t renew_iv = fq_lease_ms() / 3;
+    uint64_t lease_ms = fq_lease_ms();
+    uint64_t renew_iv = lease_ms / 3;
     if (renew_iv < 50) renew_iv = 50;
 
-    uint64_t deadline   = fq_now_wall_ms() + run_ms;
+    /* 경과 시간(하트비트 주기, 리스 자체 만료)은 단조 시계로 잰다: 벽시계가 뒤로 가면 하트비트가 그만큼
+     * 밀려 리스가 만료되고, 다른 노드가 인수한 뒤에도 옛 token으로 claim하게 된다(fq_consume과 같은 규칙).
+     * 벽시계는 테스트의 리더 구간 겹침 검사용 기록에만 쓴다. */
+    uint64_t deadline   = fq_now_mono_ms() + run_ms;
     fq_lease lease;
     int      have_lead  = 0;
     uint64_t next_renew = 0;
+    uint64_t last_renew = 0;   /* 마지막으로 리스를 성공적으로 쓴 시각(단조). 시도 전에 잰 값 */
     long     processed  = 0;
     int      became_leader = 0;
-    uint64_t lead_from  = 0;   /* 처음 리더가 된 시각 (테스트의 리더 구간 겹침 검사용) */
+    uint64_t lead_from  = 0;   /* 처음 리더가 된 시각 (테스트의 리더 구간 겹침 검사용, 벽시계) */
 
     for (;;) {
-        uint64_t now = fq_now_wall_ms();
+        uint64_t now = fq_now_mono_ms();
         if (now >= deadline) break;
+
+        /* 리스 자체 만료: 마지막 성공 갱신 뒤 리스 길이가 지났으면(멈춤, 갱신 실패 지속) FS상 리스는
+         * 끝났고 다른 노드가 인수했을 수 있다. 옛 token으로 claim하지 말고 내려놓은 뒤 다시 얻는다. */
+        if (have_lead && now >= last_renew + lease_ms) have_lead = 0;
 
         /* 대기 노드 → 리더십 획득 시도 */
         if (!have_lead) {
             int rc = fq_acquire_leadership(q, &lease);
-            if (rc != FQ_OK) { sleep_ms(30); continue; }  /* 아직 다른 리더 활성 */
+            if (rc != FQ_OK) { sleep_ms(30); continue; }  /* 다른 리더 활성 또는 일시 오류 */
             have_lead = 1;
             if (!became_leader) { became_leader = 1; lead_from = fq_now_wall_ms(); }
+            last_renew = now;
             next_renew = now + renew_iv;
             fq_recover_stale(q, &lease);   /* 선임자가 남긴 inflight 회수 */
         }
@@ -69,10 +84,17 @@ int main(int argc, char **argv)
         /* 활성 리더 → 하트비트 갱신 */
         if (now >= next_renew) {
             int rrc = fq_renew_lease(q, &lease);
-            if (rrc == FQ_ELOCKED) { sleep_ms(10); continue; }  /* 선출 락이 잠깐 잡힘 → 곧 재시도 */
-            if (rrc != FQ_OK) { have_lead = 0; continue; }       /* 리더십 상실(또는 오류) */
-            next_renew = now + renew_iv;
-            fq_recover_stale(q, &lease);   /* 좀비가 나중에 claim한 옛 token inflight도 회수 */
+            if (rrc == FQ_ENOLEADER) { have_lead = 0; continue; }   /* 리더십 상실 */
+            if (rrc != FQ_OK) {
+                /* FQ_ELOCKED(선출 락이 잠깐 잡힘)·FQ_ERR(fsync 실패, NFS 정지 등 일시 오류): FS상 리스는
+                 * 아직 유효하므로 리더를 유지하고 claim을 계속한다. 곧 다시 갱신하고, 끝내 못 하면 위의
+                 * 리스 자체 만료가 내려놓는다. 여기서 리더십을 버리면 오류 한 번에 불필요한 재선출이 생긴다. */
+                next_renew = now + 100;
+            } else {
+                last_renew = now;
+                next_renew = now + renew_iv;
+                fq_recover_stale(q, &lease);   /* 좀비가 나중에 claim한 옛 token inflight도 회수 */
+            }
         }
 
         /* claim → 처리 → ack */
@@ -82,6 +104,7 @@ int main(int argc, char **argv)
         fwrite(m->data, 1, m->len, log);
         fputc('\n', log);
         fflush(log);
+        if (ack_delay > 0) sleep_ms(ack_delay);
         fq_ack(q, m);
         processed++;
     }

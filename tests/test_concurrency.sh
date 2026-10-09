@@ -65,15 +65,21 @@ N=300
 # 짧은 리스로 failover를 빠르게: 1.5s
 export FQ_LEASE_MS_OVERRIDE=1500
 
-# nodeX 기동(활성 리더가 되어 소비 시작) 후 곧바로 강제 종료
-"$CONSUMER" "$ROOT" nodeX "$WORK/bX.log" 60000 2>"$WORK/bX.err" &
+# nodeX 기동(활성 리더가 되어 소비 시작) 후, 메시지를 처리했지만 ack하기 전에 강제 종료한다.
+# 시간으로만 맞추면(sleep 후 kill) ack 직후에 죽어 inflight가 비어 회수 경로를 전혀 밟지 않고도 통과할 수
+# 있었다. 처리 뒤 ack 전 대기(FQ_EXAMPLE_ACK_DELAY_MS)를 주고, 처리 2건 이상 + inflight 점유를 확인한 뒤 죽인다.
+FQ_EXAMPLE_ACK_DELAY_MS=100 "$CONSUMER" "$ROOT" nodeX "$WORK/bX.log" 60000 2>"$WORK/bX.err" &
 PID=$!
-sleep 0.6                       # 일부 처리 + 일부 inflight 점유 상태 만들기
+for _ in $(seq 1 200); do        # 최대 약 10초
+  if [ "$(total_count "$WORK/bX.log")" -ge 2 ] && [ "$(ls "$ROOT/inflight" 2>/dev/null | grep -c .)" -ge 1 ]; then break; fi
+  sleep 0.05
+done
 kill -9 "$PID" 2>/dev/null
 wait "$PID" 2>/dev/null
 
 PROCESSED_X=$(total_count "$WORK/bX.log")
-echo "  nodeX 강제종료 전 처리=$PROCESSED_X"
+KILL_FL=$(ls "$ROOT/inflight" 2>/dev/null | grep -c . )
+echo "  nodeX 강제종료 전 처리=$PROCESSED_X, 종료 시점 inflight=$KILL_FL"
 
 # 리스 만료 대기 후 nodeY 인수
 sleep 2
@@ -89,9 +95,14 @@ echo "  발행=$N 고유소비(X+Y)=$U 잔여(incoming=$LEFT_IN inflight=$LEFT_F
 
 # 유실 없음: X가 처리한 것 + Y가 회수·처리한 것의 합집합이 전부를 덮어야 함
 COVERED=$((U + DEAD))
+T=$(total_count "$WORK/bX.log" "$WORK/bY.log")
 [ "$PROCESSED_X" -gt 0 ] && pass "nodeX가 활성화되어 일부 처리($PROCESSED_X)" || fail "nodeX가 아무것도 처리 못함"
+[ "$KILL_FL" -ge 1 ] && pass "강제 종료 시점에 처리 중(ack 전) 메시지 있음($KILL_FL) — 회수 경로를 밟음" \
+  || fail "강제 종료 시점 inflight 없음: 회수 경로를 검증하지 못함"
 [ "$COVERED" -eq "$N" ] && pass "failover 후 유실 없음 (고유$U + dead$DEAD = $N)" || fail "유실 발생 (덮은 $COVERED != $N)"
 [ "$LEFT_FL" -eq 0 ] && pass "inflight 비워짐(회수 완료)" || fail "inflight 잔존($LEFT_FL)"
+# 처리했지만 ack 전에 죽은 메시지는 새 리더가 다시 전달한다(at-least-once의 중복)
+[ "$T" -gt "$U" ] && pass "ack 전 메시지가 재전달됨 (총 $T > 고유 $U)" || fail "재전달 없음 (총 $T, 고유 $U): 회수가 동작하지 않았을 수 있음"
 
 if [ -x "$ELECTION" ]; then
   echo "== [C] 리더 선출 경합 (살아 있는 리더를 대기 노드가 빼앗지 못함) =="

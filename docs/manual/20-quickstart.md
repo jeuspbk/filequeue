@@ -59,9 +59,12 @@ int main(void) {
 
         /* 긴 루프라면 주기적으로 리스를 갱신해 리더십을 유지하고, 갱신마다 stale도 회수한다 */
         /* rc = fq_renew_lease(q, &lease);
-           if (rc == FQ_ELOCKED) → 선출 락이 잠깐 잡힘, 잠시 후 다시 갱신
-           else if (rc != FQ_OK) break;                    리더십 상실 → 중단
-           fq_recover_stale(q, &lease);                                          */
+           if (rc == FQ_ENOLEADER) break;                  리더십 상실 → 중단
+           else if (rc != FQ_OK) → FQ_ELOCKED(선출 락)·FQ_ERR(일시 오류): 리스는 아직 유효,
+                                   claim을 계속하고 잠시 후 다시 갱신. 마지막 성공 갱신 뒤
+                                   리스 길이가 지나면(단조 시계로 잴 것) 스스로 내려놓는다
+           else fq_recover_stale(q, &lease);
+           전체 패턴은 examples/fq_consumer.c, 또는 이 모두를 해 주는 fq_consume을 쓴다.  */
     }
     /* fq_claim 이 FQ_EEMPTY 를 반환하면 큐가 비었다는 뜻 */
 
