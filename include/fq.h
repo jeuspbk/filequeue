@@ -59,6 +59,8 @@ typedef struct {
  *          허용 문자: 영문자·숫자·'.'·'-'·'_' (1~63자, "__" 금지). 어기면 FQ_EINVAL.
  *          공백은 leader.info 파싱을, "__"는 inflight 이름의 "__t<token>" 파싱을, '/'는 경로를 깨뜨린다.
  * root:    NULL·빈 문자열이거나 900자를 넘으면 FQ_EINVAL (하위 경로가 버퍼에서 잘리지 않도록).
+ *          네이티브 Win32(ANSI API)는 전체 경로 260자 한도라, 이 노드의 가장 짧은 메시지도 claim해 둘 수 없을
+ *          만큼 루트가 길면(전체 경로가 대략 157자 - node_id 길이를 넘으면) FQ_EINVAL.
  * fq_close: fq_consume으로 얻은 리더십을 쥐고 있으면 반납한다(대기 노드가 리스 만료를 기다리지 않음).
  *          저수준 API(fq_acquire_leadership)로 얻은 리스는 fq_release_leadership으로 직접 반납할 것. */
 int  fq_open(const char *root, const char *node_id, fq_queue **out);

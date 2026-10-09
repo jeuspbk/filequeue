@@ -45,6 +45,17 @@ int fq_open(const char *root, const char *node_id, fq_queue **out)
     }
     fq_gen_id(q->instance, sizeof(q->instance));
 
+    /* 경로 전체 한도(네이티브 Win32 260자): 이 노드의 가장 짧은 메시지("<16>-<10>-<node_id>-<id 32>.msg")조차
+     * claim 접미사를 붙여 inflight/에 둘 수 없는 루트면 큐로 쓸 수 없다. control/의 가장 긴 이름
+     * (election.lock.stale-<node_id>-<id>)도 이보다 짧다. 열어 두면 FS 시각 측정 파일부터 만들지 못해
+     * fq_consume이 끝없이 FQ_ERR(일시 오류로 보여 재시도)를 낸다(MinGW 실측: 루트 230자). */
+    char probe[1280];
+    fq_path(probe, sizeof(probe), q->root, FQ_DIR_INFLIGHT, NULL);
+    if (!fq_fs_path_fits(probe, 1 + 65 + strlen(q->node_id) + (255 - FQ_MSG_NAME_MAX))) {
+        free(q);
+        return FQ_EINVAL;
+    }
+
     /* 하위 디렉터리 생성 */
     const char *subs[] = { FQ_DIR_TMP, FQ_DIR_INCOMING, FQ_DIR_INFLIGHT,
                            FQ_DIR_DEAD, FQ_DIR_CONTROL };

@@ -253,18 +253,27 @@ int main(int argc, char **argv)
             fq_close(ql);
         }
 #if defined(_WIN32) && !defined(__CYGWIN__)
-        /* 발행 쪽: 메시지 경로(약 250자)는 들어가지만 claim 접미사까지 붙이면 260자를 넘는 루트 → 거절.
-         * 이름 = 16+1+10+1+"nodeW"+1+32+".msg" = 70자, incoming 디렉터리 = 루트 + 9자. */
+        /* 전체 경로 길이 L의 루트. 이름 = 16+1+10+1+"nodeW"+1+32[+"."+stream]+".msg" = 70(+1+stream)자,
+         * incoming 디렉터리 = 루트 + 9자, claim 접미사까지 27자. */
         char broot[1100], rfull[1100];
         DWORD rl = GetFullPathNameA(root, sizeof(rfull), rfull, NULL);
-        int pad = 170 - (int)rl - 1;
-        snprintf(broot, sizeof(broot), "%s/%0*d", root, pad > 1 ? pad : 1, 0);
         fq_queue *qw = NULL;
-        CHECK(fq_open(broot, "nodeW", &qw) == FQ_OK && qw, "Win32: 긴 루트 fq_open");
+        /* 발행 쪽: 루트 140자 + stream 25자 → 메시지 경로 246자는 들어가지만 접미사까지 273자 → 거절 */
+        snprintf(broot, sizeof(broot), "%s/%0*d", root, (int)(140 - rl - 1), 0);
+        CHECK(fq_open(broot, "nodeW", &qw) == FQ_OK && qw, "Win32: 루트 140자 fq_open");
         if (qw) {
-            CHECK(fq_publish(qw, "w", 1, NULL) == FQ_EINVAL, "Win32: 전체 경로가 한도를 넘는 발행은 FQ_EINVAL");
+            CHECK(fq_publish(qw, "w", 1, NULL) == FQ_OK, "Win32: 짧은 이름 발행은 허용");
+            CHECK(fq_publish(qw, "w", 1, "sssssssssssssssssssssssss") == FQ_EINVAL,
+                  "Win32: claim 접미사까지 붙인 경로가 한도를 넘는 발행은 FQ_EINVAL");
+            fq_msg *wm = NULL;
+            while (fq_consume(qw, &wm) == FQ_OK) fq_ack(qw, wm);
             fq_close(qw);
         }
+        /* 열기 쪽: 루트 170자면 가장 짧은 메시지도 claim해 둘 수 없다 → 열지 않는다(열면 FQ_ERR 무한 반복) */
+        snprintf(broot, sizeof(broot), "%s/%0*d", root, (int)(170 - rl - 1), 0);
+        qw = NULL;
+        CHECK(fq_open(broot, "nodeW", &qw) == FQ_EINVAL && !qw, "Win32: 큐로 쓸 수 없는 긴 루트는 fq_open FQ_EINVAL");
+        if (qw) fq_close(qw);
 #endif
     }
 

@@ -129,6 +129,9 @@ BEFORE : <대상의 정렬 키>!<ms>-<seq>-<producer>-<id>.msg
   발행은 claim 접미사까지 붙인 전체 경로가 들어가는지 보고 거절한다. 그래도 들어온 너무 긴 이름(옛 버전, 밖에서 넣은 것)은
   claim이 같은 이름으로 `dead/`에 격리한다 — Win32 ANSI API는 긴 경로를 `PATH_NOT_FOUND`로 알려 와, 그대로면 경합
   패배(`FQ_ENOENT`)로 보여 claim이 끝없이 다시 시도했다(FS 계층이 `FQ_EINVAL`로 구분한다).
+  `fq_open`은 이 노드의 가장 짧은 메시지도 claim해 둘 수 없는 루트(전체 경로 약 157자 - node_id 길이 초과)를
+  `FQ_EINVAL`로 거절한다. 열어 두면 control/의 FS 시각 측정 파일부터 못 만들어 `fq_consume`이 끝없이 `FQ_ERR`를
+  냈다(루트 230자 실측). control/의 이름은 가장 짧은 메시지의 claim 경로보다 짧으므로 이 검사로 함께 보장된다.
 
 재시도 횟수와 fencing token은 이름 끝에 접미사로 붙는다.
 
