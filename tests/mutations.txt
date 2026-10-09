@@ -10,7 +10,7 @@ M07 내 리스 판정에서 instance 생략#src/fq_leader.c#return strcmp(li->id
 M08 token high-water에서 inflight 무시#src/fq_leader.c#int rc = fq_fs_list(inf_dir, max_token_cb, &mx);#int rc = FQ_OK; (void)max_token_cb;
 M09 리스 자체 만료 감지 제거#src/fq_consume.c#if (now >= q->lead_last_renew_ms + fq_lease_ms())#if (0)
 M10 leader.info ENOENT 재시도 제거#src/fq_util.c#for (int i = 0; rc == FQ_ENOENT && i < FQ_REPLACE_READ_RETRIES; i++) {#for (int i = 0; 0; i++) {
-M11 DLQ 한도 무시(dead로 안 감)#src/fq_queue.c#int dead = attempt + 1 >= FQ_MAX_ATTEMPTS;#int dead = 0;
+M11 DLQ 한도 무시(dead로 안 감)#src/fq_queue.c#int dead = attempt >= FQ_MAX_ATTEMPTS - 1;#int dead = 0;
 M12 claim 긴 이름 격리 대신 오류#src/fq_queue.c#if (quarantine_incoming(q, name) != FQ_OK) return FQ_ERR;#return FQ_ERR;
 M13 DLQ 이름 검증 제거#src/fq_queue.c#if (!valid_entry_name(name)) return FQ_EINVAL;#if (!name) return FQ_EINVAL;
 M14 claim 뒤 읽기 실패를 시도로 안 침#src/fq_queue.c#if (fq_requeue_inflight(q, inf_name, NULL) != FQ_OK) {#if (1) {

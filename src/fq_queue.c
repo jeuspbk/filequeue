@@ -243,12 +243,14 @@ int fq_return(fq_queue *q, const char *path, uint32_t attempt)
     fq_gen_id(id, sizeof(id));
     char name[512];
     new_msg_name(q, id, NULL, name, sizeof(name));
-    char dst[1408];
-    int dead = attempt + 1 >= FQ_MAX_ATTEMPTS;
+    char dst[1408], req_name[640];
+    int dead = attempt >= FQ_MAX_ATTEMPTS - 1;   /* attempt + 1 >= 한도. UINT32_MAX에서 +1이 0으로 넘치지 않게 */
     if (dead) {
-        fq_path(dst, sizeof(dst), q->root, FQ_DIR_DEAD, name);
+        /* nack이 dead/로 보낼 때와 같이 ".a<attempt>"를 남긴다: fq_dead_list가 attempt를 0으로 보여 주지 않게 */
+        if (attempt) snprintf(req_name, sizeof(req_name), "%s.a%u", name, attempt);
+        else         snprintf(req_name, sizeof(req_name), "%s", name);
+        fq_path(dst, sizeof(dst), q->root, FQ_DIR_DEAD, req_name);
     } else {
-        char req_name[640];
         snprintf(req_name, sizeof(req_name), "%s.a%u", name, attempt + 1);
         fq_path(dst, sizeof(dst), q->root, FQ_DIR_INCOMING, req_name);
     }
@@ -588,7 +590,7 @@ int fq_requeue_inflight(fq_queue *q, const char *inflight_name, int *to_dead)
 
     char src[1408], dst[1408];
     fq_path(src, sizeof(src), q->root, FQ_DIR_INFLIGHT, inflight_name);
-    int dead = attempt + 1 >= FQ_MAX_ATTEMPTS;
+    int dead = attempt >= FQ_MAX_ATTEMPTS - 1;   /* 이름의 ".a<N>"가 아주 커도 +1이 0으로 넘치지 않게 */
     if (dead) {
         fq_path(dst, sizeof(dst), q->root, FQ_DIR_DEAD, logical);
     } else {

@@ -25,6 +25,20 @@ static int count_cb(const char *name, void *ud)
     return 0;
 }
 
+/* fq_dead_list: 페이로드가 want인 항목(마지막 것)의 이름·attempt */
+typedef struct { const char *want; char *name; uint32_t attempt; } dl_find;
+static int find_dead(const char *name, const void *data, size_t len, uint32_t attempt, void *ud)
+{
+    dl_find *f = ud;
+    if (data && len == strlen(f->want) && memcmp(data, f->want, len) == 0) {
+        free(f->name);
+        f->name = malloc(strlen(name) + 1);
+        if (f->name) memcpy(f->name, name, strlen(name) + 1);
+        f->attempt = attempt;
+    }
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     const char *root = argc > 1 ? argv[1] : "_twophase_test";
@@ -114,6 +128,13 @@ int main(int argc, char **argv)
     CHECK(ok && rounds == FQ_MAX_ATTEMPTS, "FQ_MAX_ATTEMPTS번 되돌린 뒤 큐에서 사라짐");
     int ndead = 0;
     CHECK(fq_fs_list(dead, count_cb, &ndead) == FQ_OK && ndead == ndead_before + 1, "dead/에 하나 추가");
+    {
+        dl_find f = { "r", NULL, 0 };
+        fq_dead_list(q, find_dead, &f);
+        CHECK(f.name && f.attempt == FQ_MAX_ATTEMPTS - 1,
+              "dead/의 그 메시지는 attempt를 잃지 않음 (fq_dead_list = 한도 - 1, nack과 같음)");
+        if (f.name) { fq_dead_drop(q, f.name); free(f.name); }
+    }
     CHECK(fq_return(q, f3, 0) == FQ_ENOENT, "없는 파일을 되돌림: FQ_ENOENT (멱등)");
 
     printf("[6] fq_consume_if / fq_release\n");
@@ -154,6 +175,60 @@ int main(int argc, char **argv)
         CHECK(rc == FQ_EEMPTY, "건너뛰기를 반복하지 않고 큐에서 빠짐");
         int nd = 0;
         CHECK(fq_fs_list(dead, count_cb, &nd) == FQ_OK && nd == nd0 + 1, "dead/로 격리");
+    }
+
+    printf("[8] attempt가 아주 커도 넘치지 않고 dead/로 (fq_return, nack)\n");
+    {
+        int nd0 = 0, nd1 = 0;
+        const char *bigname = "0000000000000001-0000000001-ext-x.msg.a4294967295";
+        fq_dead_drop(q, bigname);                /* 이전 실행 잔여: 같은 이름이라 덮어써져 개수가 어긋난다 */
+        fq_fs_list(dead, count_cb, &nd0);
+        char f4[600];
+        snprintf(f4, sizeof(f4), "%s/big", stage);
+        CHECK(fq_fs_write_sync(f4, "big", 3) == FQ_OK, "보관 파일");
+        CHECK(fq_return(q, f4, 4294967295u) == FQ_OK, "fq_return(attempt = UINT32_MAX)");
+        fq_msg *mb = NULL;
+        CHECK(fq_consume(q, &mb) == FQ_EEMPTY, "  ... incoming으로 돌아오지 않음 (+1이 0으로 넘치면 .a0으로 돌아왔다)");
+        if (mb) fq_ack(q, mb);
+        /* 이름의 ".a<N>"가 아주 큰 메시지를 nack */
+        char big[700];
+        snprintf(big, sizeof(big), "%s/incoming/%s", qroot, bigname);
+        CHECK(fq_fs_write_sync(big, "bn", 2) == FQ_OK, "incoming에 .a4294967295 메시지");
+        mb = NULL;
+        CHECK(fq_consume(q, &mb) == FQ_OK && mb && fq_nack(q, mb) == FQ_OK, "claim 뒤 nack");
+        mb = NULL;
+        CHECK(fq_consume(q, &mb) == FQ_EEMPTY, "  ... incoming으로 돌아오지 않음");
+        if (mb) fq_ack(q, mb);
+        fq_fs_list(dead, count_cb, &nd1);
+        CHECK(nd1 == nd0 + 2, "둘 다 dead/로");
+        CHECK(fq_dead_drop(q, bigname) == FQ_OK, "  ... nack한 것은 원래 이름(.a<N> 포함) 그대로 dead/에");
+    }
+
+    printf("[9] fq_take와 회수가 같은 inflight를 다투면 정확히 한쪽만: 회수가 먼저면 take는 FQ_ENOENT\n");
+    {
+        fq_publish(q, "tk", 2, NULL);
+        fq_msg *mt = NULL;
+        CHECK(fq_consume(q, &mt) == FQ_OK && mt, "claim (이 핸들의 token)");
+        /* 리스를 놓친 사이 더 새 리더가 회수한 상황: 다른 핸들이 더 큰 token으로 회수 */
+        fq_queue *nq = NULL;
+        CHECK(fq_open(qroot, "nodeNew", &nq) == FQ_OK && nq, "새 리더 핸들");
+        fq_lease newer;
+        memset(&newer, 0, sizeof(newer));
+        newer.token = 1000000;
+        if (nq) CHECK(fq_recover_stale(nq, &newer) == FQ_OK, "새 리더의 회수");
+        char f5[600];
+        snprintf(f5, sizeof(f5), "%s/tk", stage);
+        CHECK(mt && fq_take(q, mt, f5) == FQ_ENOENT, "take: FQ_ENOENT (이미 회수됨)");
+        CHECK(fq_fs_exists(f5) == 0, "  ... 큐 밖으로 나가지 않음");
+        if (mt) fq_msg_free(mt);
+        int copies = 0;
+        fq_msg *mc = NULL;
+        while (fq_consume(q, &mc) == FQ_OK) {
+            if (mc->len == 2 && memcmp(mc->data, "tk", 2) == 0) copies++;
+            fq_ack(q, mc);
+        }
+        CHECK(copies == 1, "큐에는 정확히 한 부 (attempt+1로 되돌아옴)");
+        if (nq) fq_close(nq);
     }
 
     fq_close(q);
