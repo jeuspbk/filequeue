@@ -142,6 +142,16 @@ POSIX(Cygwin 등)에서는 존재 검사와 rename이 분리되어 있으므로 
 | `fq_take` | `int fq_take(fq_queue *q, fq_msg *m, const char *path)` | claim한 `m`을 큐에서 꺼내 `path`로 옮긴다(ack 대신). 성공하면 `m` 해제 + `path` 디렉터리 fsync. 실패하면 `m`은 claim 상태 그대로(`fq_nack` 가능; `FQ_EEXIST` = `path`가 이미 있음, `FQ_ENOENT` = 이미 회수됨). |
 | `fq_return` | `int fq_return(fq_queue *q, const char *path, uint32_t attempt)` | `fq_take`로 꺼낸 파일을 `fq_nack`처럼 되돌린다. `attempt`는 꺼낼 때의 `m->attempt`; attempt+1로 `incoming/`에 넣고 한도에 닿으면 `dead/`. 이름은 새로 붙어(시각 = 지금, stream_key 없음) 원래 순서·파티션은 유지되지 않는다. `FQ_ENOENT` = 이미 되돌렸음. |
 
+## DLQ 함수
+
+리더십이 필요 없다(어느 핸들에서나). 모두 rename/unlink 한 번이라 두 쪽이 같은 메시지를 동시에 다뤄도 한 쪽만 성공한다.
+
+| 함수 | 시그니처 | 설명 |
+|---|---|---|
+| `fq_dead_list` | `int fq_dead_list(fq_queue *q, fq_dead_fn cb, void *ud)` | `dead/`를 오래된 순으로 보며 `cb(name, data, len, attempt, ud)`를 부른다. `attempt`는 이름의 `.a<N>`(없으면 0). 읽을 수 없는 항목은 `data = NULL`, `len = 0`. `cb`가 0이 아닌 값을 돌려주면 멈추고 그 값을 반환, 끝까지 보면 `FQ_OK`. |
+| `fq_redrive` | `int fq_redrive(fq_queue *q, const char *name)` | `dead/<name>`을 `incoming/`에 attempt 0으로 되돌린다(`.a<N>`를 뗀다. 이름의 시각은 그대로라 앞쪽에서 처리). `FQ_ENOENT` = 없음(이미 되살렸거나 버림), `FQ_EINVAL` = 잘못된 이름이거나 claim 접미사를 붙일 수 없는 긴 이름(되돌려도 다시 격리될 뿐 → 버릴 것). |
+| `fq_dead_drop` | `int fq_dead_drop(fq_queue *q, const char *name)` | `dead/<name>` 영구 삭제. `FQ_ENOENT` = 없음. |
+
 ## 유지보수 함수
 
 | 함수 | 시그니처 | 설명 |

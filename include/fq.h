@@ -193,6 +193,21 @@ typedef struct {
 int  fq_publish_ex(fq_queue *q, const void *data, size_t len, const char *stream_key, const fq_order *order);
 int  fq_adopt_ex(fq_queue *q, const char *path, const char *stream_key, const fq_order *order);
 
+/* ---- DLQ (dead/) ----
+ * 재시도 한도를 넘었거나(FQ_MAX_ATTEMPTS) claim할 수 없어 격리된 메시지를 운영자가 보고 되살리거나 버린다.
+ * 리더십이 필요 없다(어느 핸들에서나). 모두 rename/unlink 한 번이라 동시에 두 쪽이 같은 메시지를 다뤄도 한 쪽만 성공한다.
+ * fq_dead_list: dead/를 오래된 순(이름 순)으로 보며 cb(name, data, len, attempt, ud)를 부른다. attempt는 이름의
+ *               ".a<N>"(없으면 0). 읽을 수 없는 항목은 data = NULL, len = 0으로 넘긴다(버릴 수는 있다).
+ *               cb가 0이 아닌 값을 돌려주면 멈추고 그 값을 돌려준다. 끝까지 보면 FQ_OK.
+ * fq_redrive  : dead/<name>을 incoming/에 attempt 0으로 되돌린다(".a<N>"를 뗀다. 이름의 시각은 그대로라 큐의
+ *               앞쪽에서 처리된다). FQ_ENOENT = 없음(이미 되살렸거나 버림), FQ_EINVAL = 잘못된 이름이거나
+ *               claim 접미사를 붙일 수 없는 긴 이름(되돌리면 다시 큐 맨 앞을 막는다 → 버릴 것).
+ * fq_dead_drop: dead/<name>을 영구 삭제. FQ_ENOENT = 없음. */
+typedef int (*fq_dead_fn)(const char *name, const void *data, size_t len, uint32_t attempt, void *ud);
+int  fq_dead_list(fq_queue *q, fq_dead_fn cb, void *ud);
+int  fq_redrive(fq_queue *q, const char *name);
+int  fq_dead_drop(fq_queue *q, const char *name);
+
 /* ---- 유지보수 ---- */
 /* 크래시 잔재 중 mtime이 tmp_max_age_ms보다 오래된 것 정리: tmp/의 모든 파일(발행 중 크래시),
  * control/의 .now-*(FS 시각 측정), leader-*.tmp(leader.info 교체 중), election.lock.stale-*.

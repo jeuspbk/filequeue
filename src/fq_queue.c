@@ -651,6 +651,66 @@ void fq_msg_free(fq_msg *m)
     free(m);
 }
 
+/* ---- DLQ (fq.h) ---- */
+
+/* 운영자가 넘긴 dead/ 항목 이름: 경로 구분자·"."·".."이면 dead/ 밖을 가리킨다. */
+static int valid_entry_name(const char *name)
+{
+    if (!name || !name[0] || strlen(name) > 255) return 0;
+    if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) return 0;
+    return strpbrk(name, "/\\") == NULL;
+}
+
+int fq_dead_list(fq_queue *q, fq_dead_fn cb, void *ud)
+{
+    char dead_dir[1280];
+    fq_path(dead_dir, sizeof(dead_dir), q->root, FQ_DIR_DEAD, NULL);
+    strvec sv = {0};
+    if (fq_fs_list(dead_dir, collect_cb, &sv) != FQ_OK) { strvec_free(&sv); return FQ_ERR; }
+    if (sv.n) qsort(sv.v, sv.n, sizeof(char *), cmp_str);
+    int rc = FQ_OK;
+    for (size_t i = 0; i < sv.n && rc == FQ_OK; i++) {
+        char path[1408], base[512];
+        uint32_t attempt = 0;
+        fq_parse_attempt(sv.v[i], base, sizeof(base), &attempt);
+        fq_path(path, sizeof(path), q->root, FQ_DIR_DEAD, sv.v[i]);
+        void *data = NULL; size_t len = 0;
+        int rrc = fq_fs_read_file(path, &data, &len);
+        if (rrc == FQ_ENOENT) continue;                 /* 그 사이 되살렸거나 버림 */
+        if (rrc != FQ_OK) { data = NULL; len = 0; }     /* 읽을 수 없어도 보여 준다(버릴 수 있게) */
+        rc = cb(sv.v[i], data, len, attempt, ud);
+        free(data);
+    }
+    strvec_free(&sv);
+    return rc;
+}
+
+int fq_redrive(fq_queue *q, const char *name)
+{
+    if (!valid_entry_name(name)) return FQ_EINVAL;
+    char base[512];
+    uint32_t attempt = 0;
+    fq_parse_attempt(name, base, sizeof(base), &attempt);   /* attempt 0으로: ".a<N>"를 뗀다 */
+    char src[1408], dst[1408];
+    fq_path(src, sizeof(src), q->root, FQ_DIR_DEAD, name);
+    fq_path(dst, sizeof(dst), q->root, FQ_DIR_INCOMING, base);
+    /* claim 접미사를 붙일 수 없는 이름(fq_claim이 격리한 것)은 되돌리면 다시 격리될 뿐이다 */
+    if (strlen(base) > FQ_MSG_NAME_MAX || !fq_fs_path_fits(dst, 255 - FQ_MSG_NAME_MAX)) return FQ_EINVAL;
+    int rc = fq_fs_rename(src, dst);
+    if (rc != FQ_OK) return rc;                          /* FQ_ENOENT: 이미 되살렸거나 버림 */
+    fsync_incoming(q);
+    claim_cache_clear(q);                                /* 오래된 시각이라 캐시보다 앞일 수 있다 */
+    return FQ_OK;
+}
+
+int fq_dead_drop(fq_queue *q, const char *name)
+{
+    if (!valid_entry_name(name)) return FQ_EINVAL;
+    char path[1408];
+    fq_path(path, sizeof(path), q->root, FQ_DIR_DEAD, name);
+    return fq_fs_unlink(path);
+}
+
 /* ---- GC ---- */
 
 typedef struct { fq_queue *q; const char *sub; uint64_t cutoff; int removed; } gc_ctx;

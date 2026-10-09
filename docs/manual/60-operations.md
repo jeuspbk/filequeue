@@ -88,14 +88,27 @@ while (more_work(m)) {
 
 ## DLQ (dead-letter queue)
 
-`dead/` 디렉터리에는 재시도 한도를 초과한 메시지가 모인다. 운영에서는:
+`dead/` 디렉터리에는 재시도 한도를 초과한 메시지와, 이름이 너무 길어 claim할 수 없어 격리된 메시지가
+모인다. 운영에서는:
 
 - `dead/`의 파일 수를 모니터링하라. 쌓인다면 특정 메시지가 반복적으로 소비자를 실패시키고 있다는
   신호다(poison 메시지, 처리 로직 버그).
-- 원인을 고친 뒤 `dead/`의 파일을 `incoming/`으로 옮기면 재처리할 수 있다. 이때 끝의 `.a<N>`
-  접미사를 **떼고** 옮긴다(예: `…-x.msg.a4` → `…-x.msg`). 그대로 옮기면 attempt가 한도 직전이라 한 번만
-  더 실패해도 곧바로 `dead/`로 돌아간다. 앞쪽 시각은 그대로라 큐의 맨 앞에서 처리된다.
-- 영구 폐기 대상이면 그대로 삭제한다.
+- 내용은 `fq_dead_list`로 본다(이름, 페이로드, attempt).
+- 원인을 고친 뒤 `fq_redrive(q, name)`로 되살린다: attempt 0으로 `incoming/`에 돌아가고, 앞쪽 시각은
+  그대로라 큐의 맨 앞에서 처리된다. `FQ_EINVAL`이면 claim할 수 없는 긴 이름이니 버린다.
+  손으로 옮긴다면 끝의 `.a<N>` 접미사를 **떼고** 옮긴다(예: `…-x.msg.a4` → `…-x.msg`). 그대로 옮기면
+  attempt가 한도 직전이라 한 번만 더 실패해도 곧바로 `dead/`로 돌아간다.
+- 영구 폐기 대상이면 `fq_dead_drop(q, name)`(또는 파일 삭제).
+
+```c
+static int show(const char *name, const void *data, size_t len, uint32_t attempt, void *ud)
+{
+    printf("%s attempt=%u len=%zu\n", name, attempt, len);
+    return 0;                                   /* 0이 아니면 나열을 멈춘다 */
+}
+fq_dead_list(q, show, NULL);
+fq_redrive(q, "0001760000000000-0000000042-node1-....msg.a4");
+```
 
 ## 모니터링 포인트
 

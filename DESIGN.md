@@ -345,6 +345,11 @@ int  fq_renew_lease(fq_queue *q, fq_lease *lease);
 int  fq_recover_stale(fq_queue *q, const fq_lease *lease);
 int  fq_release_leadership(fq_queue *q, const fq_lease *lease);    /* 정상 종료 시 반납 */
 int  fq_claim(fq_queue *q, const fq_lease *lease, fq_msg **out);   /* FQ_EEMPTY = 비었음 */
+
+/* DLQ: 리더십 불필요, 전이는 rename/unlink 한 번 */
+int  fq_dead_list(fq_queue *q, fq_dead_fn cb, void *ud);   /* 오래된 순, 페이로드·attempt와 함께 */
+int  fq_redrive(fq_queue *q, const char *name);            /* dead/ → incoming/, attempt 0 */
+int  fq_dead_drop(fq_queue *q, const char *name);          /* 영구 삭제 */
 ```
 
 ### Win32 ↔ POSIX 원자 연산 매핑 (플랫폼 추상화 계층 `fq_fs`로 격리)
