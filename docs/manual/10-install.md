@@ -24,7 +24,7 @@ cmake --build build                        # 빌드
 
 - `build/libfilequeue.a` — 정적 라이브러리
 - `build/test_atomicity`, `build/test_basic`, `build/test_consume`, `build/test_twophase`,
-  `build/test_clock` — 단위 테스트 (`ctest` 등록)
+  `build/test_clock`, `build/test_order`, `build/test_dlq` — 단위 테스트 (`ctest` 등록)
 - `build/test_election` — 리더 선출 경합(split-brain) 검사. 동시성 스크립트가 자동으로 사용
 - `build/fq_producer`, `build/fq_consumer` — CLI 예제 겸 테스트 드라이버
 - `build/fq_bench` — 처리량 벤치마크 (`BENCHMARK.md` 참고)
@@ -32,7 +32,7 @@ cmake --build build                        # 빌드
 ## 테스트 실행
 
 ```bash
-# C 단위 테스트 (원자성, 기본 라운드트립/failover, consume·하트비트, 2단계 발행, FS 시각)
+# C 단위 테스트 (원자성, 기본 라운드트립/failover, consume·하트비트, 2단계 발행, FS 시각, 순서 지정, DLQ)
 ctest --test-dir build --output-on-failure
 
 # 단일 테스트 직접 실행
@@ -55,9 +55,10 @@ bash tests/test_concurrency.sh ./build/fq_producer ./build/fq_consumer
 | 플랫폼 | 사용 구현 | 핵심 API |
 |---|---|---|
 | 네이티브 Windows (MSVC) | `src/fq_fs_win32.c` | `MoveFileEx`, `SetFileInformationByHandle(FileRenameInfoEx)`, `CreateFile(CREATE_NEW)`, `LockFileEx`, `FlushFileBuffers` |
-| POSIX / **Cygwin** 포함 | `src/fq_fs_posix.c` | `rename`/`link`, `open(O_EXCL)`, `fcntl(F_SETLK)`, `fsync` |
+| POSIX / **Cygwin** 포함 | `src/fq_fs_posix.c` | `rename`, `renameat2(RENAME_NOREPLACE)`(Linux), `open(O_EXCL)`, `fcntl(F_SETLK)`, `fsync` |
 
-Cygwin은 POSIX를 제공하므로 항상 POSIX 경로로 빌드된다. 새 FS 연산이 필요하면 `fq_fs.h`에
+Cygwin은 POSIX를 제공하므로 항상 POSIX 경로로 빌드된다. 네이티브 Windows 구현은 Cygwin의 MinGW 크로스 컴파일러
+(`x86_64-w64-mingw32-gcc`)로 네이티브 실행 파일을 만들어 검증한다(절차는 `CLAUDE.md`). MSVC로는 아직 빌드해 보지 않았다. 새 FS 연산이 필요하면 `fq_fs.h`에
 인터페이스를 추가하고 **양쪽 구현을 모두** 채워야 추상화가 유지된다.
 
 ## 라이브러리 사용하기

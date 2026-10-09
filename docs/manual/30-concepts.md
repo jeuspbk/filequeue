@@ -24,7 +24,7 @@ filequeue 전체를 관통하는 단 하나의 원칙이다.
   tmp/            발행 중 임시 파일 (스테이징)
   incoming/       발행 완료, 소비 대기
   inflight/       소비자가 점유하여 처리 중
-  dead/           DLQ: 재시도 한도를 초과한 메시지
+  dead/           DLQ: 재시도 한도를 초과한 메시지, claim할 수 없어 격리된 메시지
   control/
     leader.info   현재 리더 id, fencing token, 리스 만료시각 (하트비트 = 이 파일의 원자 교체)
     election.lock 리더 선출 직렬화용 배타 생성 mutex
@@ -40,13 +40,15 @@ filequeue 전체를 관통하는 단 하나의 원칙이다.
 
 ```
 발행된 메시지:  <epoch_ms>-<seq>-<producer>-<id>[.<stream>].msg
+  맨 앞(HEAD):  !<뒤집은 epoch_ms>-<뒤집은 seq>-<producer>-<id>[.<stream>].msg
+  대상 앞:      <대상의 정렬 키>!<epoch_ms>-<seq>-<producer>-<id>[.<stream>].msg
 점유(inflight): <메시지명>__t<token>
 재시도:         <메시지명>.a<N>
 ```
 
 | 요소 | 의미 |
 |---|---|
-| `epoch_ms`-`seq` | 발행 시각 + 시퀀스. 파일명 정렬만으로 best-effort FIFO 순서를 만든다. |
+| `epoch_ms`-`seq` | 발행 시각 + 시퀀스. 파일명 정렬만으로 best-effort FIFO 순서를 만든다. 이 앞부분이 **정렬 키**이며, 순서 지정 발행(`fq_publish_ex`)은 이것만 바꿔 자리를 정한다(`!`는 숫자·`-`보다 작다). |
 | `producer`-`id` | 노드 간 조율 없이 전역 유일성 보장. |
 | `__t<token>` | inflight 점유 시 stamp되는 **fencing token**(리더 토큰). 복구의 판단 기준. |
 | `.a<N>` | 재시도 횟수. `FQ_MAX_ATTEMPTS` 초과 시 `dead/`로 이동. |
@@ -60,7 +62,7 @@ filequeue 전체를 관통하는 단 하나의 원칙이다.
 |---|---|
 | 허용 문자 | 영문자·숫자·`.`·`-`·`_` |
 | 금지 | 연속 밑줄 `__` (inflight 이름의 `__t<token>` 구분자와 충돌) |
-| 길이 | `node_id` 1~63자, `stream_key` 1~127자, 발행 시 두 길이의 합 160자 이하 — 넘으면 `FQ_EINVAL`일 수 있다 (메시지 이름 + 재시도·claim 접미사가 파일명 한도 255자 안) |
+| 길이 | `node_id` 1~63자, `stream_key` 1~127자, 발행 시 두 길이의 합 160자 이하 — 넘으면 `FQ_EINVAL`일 수 있다 (메시지 이름 + 재시도·claim 접미사가 파일명 한도 255자 안). 네이티브 Win32는 루트를 포함한 전체 경로도 claim 접미사까지 260자 안이어야 한다 |
 
 공백은 `leader.info` 파싱을, `__`는 `__t<token>` 파싱을, `/`는 경로를 깨뜨리기 때문이다.
 
@@ -77,6 +79,9 @@ filequeue 전체를 관통하는 단 하나의 원칙이다.
                   └────────────────────────────────────────┘
                          attempt+1 로 재큐잉 (한도 초과 시 dead/)
 ```
+
+`dead/`의 메시지는 운영자가 `fq_redrive`로 `incoming/`에 되살리거나(attempt 0) `fq_dead_drop`으로 버린다
+([운영 > DLQ](#dlq-dead-letter-queue)).
 
 - **발행**: `tmp/`에 기록 + fsync → `incoming/`으로 원자적 rename → 디렉터리 fsync.
 - **소비**: `incoming/` → `inflight/` rename으로 점유(CLAIM) → 처리 → unlink로 ACK.

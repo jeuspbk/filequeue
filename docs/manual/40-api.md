@@ -15,15 +15,15 @@ API의 **정본은 `include/fq.h`의 선언과 주석**이다. 이 절은 표 �
 | `FQ_EEMPTY` | -4 | 큐가 비어 있음 |
 | `FQ_ELOCKED` | -5 | 락/리더십을 다른 쪽이 보유 |
 | `FQ_ENOLEADER` | -6 | 리더십을 잃음 (fencing) |
-| `FQ_EINVAL` | -7 | 잘못된 인자 (`node_id` / `stream_key` 형식, [식별자 규칙](#식별자-규칙) 참고) |
+| `FQ_EINVAL` | -7 | 잘못된 인자: `node_id` / `stream_key` 형식([식별자 규칙](#식별자-규칙)), 이름·경로 길이 한도(claim 접미사까지 파일명 255자, 네이티브 Win32는 전체 경로 260자), 순서 지정 인자, DLQ 항목 이름 |
 | `FQ_ENOSPC` | -8 | 공간 부족 (`fq_publish`). 재시도보다 운영자 조치(정리·증설)가 필요할 수 있다 |
 
 > `FQ_ERR`는 일시적일 수 있다(fsync 실패, NFS 정지 등). 소비/대기 루프는 `FQ_ERR`에 종료하지 말고
 > 잠시 쉬었다가 다시 호출한다. 쓰기에 실패한 임시 파일은 라이브러리가 그 자리에서 지운다.
 
 > `fq_claim` 도중 다른 소비자에게 메시지를 빼앗기면 내부적으로 `FQ_ENOENT`/`FQ_EEXIST`로
-> 표현되지만, 이는 정상 흐름이라 라이브러리가 다음 후보로 넘어간다. 호출자에게는 결국 `FQ_OK`(획득)
-> 또는 `FQ_EEMPTY`(없음)만 보인다.
+> 표현되지만, 이는 정상 흐름이라 라이브러리가 다음 후보로 넘어간다. 호출자에게는 `FQ_OK`(획득),
+> `FQ_EEMPTY`(없음), 또는 진짜 I/O 오류인 `FQ_ERR`만 보인다.
 
 ## 튜닝 노브 (컴파일 타임 `#define`)
 
@@ -54,6 +54,7 @@ typedef struct {
     void    *data;        /* 페이로드 (소유) */
     size_t   len;
     uint32_t attempt;     /* 현재까지 재처리 시도 횟수 */
+    fq_queue *owner;      /* 내부용: claim한 핸들(들고 있는 메시지 추적). 건드리지 말 것 */
 } fq_msg;
 ```
 
@@ -64,14 +65,48 @@ typedef struct {
 
 | 함수 | 시그니처 | 설명 |
 |---|---|---|
-| `fq_open` | `int fq_open(const char *root, const char *node_id, fq_queue **out)` | 큐를 열고 하위 디렉터리를 생성. `node_id`는 이 노드의 식별자(메시지 파일명·리더십 id 겸용). `NULL`이면 `FQ_NODE_ID` 환경변수 → `<호스트명>-<pid>` 순으로 폴백. 형식이 어긋나거나 `root`가 NULL·900자 초과면 `FQ_EINVAL`. |
+| `fq_open` | `int fq_open(const char *root, const char *node_id, fq_queue **out)` | 큐를 열고 하위 디렉터리를 생성. `node_id`는 이 노드의 식별자(메시지 파일명·리더십 id 겸용). `NULL`이면 `FQ_NODE_ID` 환경변수 → `<호스트명>-<pid>` 순으로 폴백. 형식이 어긋나거나 `root`가 NULL·900자 초과면 `FQ_EINVAL`. 네이티브 Win32는 이 노드의 가장 짧은 메시지도 claim해 둘 수 없을 만큼 루트가 길면(전체 경로 약 157자 - `node_id` 길이 초과) `FQ_EINVAL`. |
 | `fq_close` | `void fq_close(fq_queue *q)` | 큐 핸들 해제. `fq_consume`으로 얻은 리더십을 쥐고 있으면 반납한다(저수준 API로 얻은 리스는 `fq_release_leadership`으로 직접). |
 
 ## 생산자 함수
 
 | 함수 | 시그니처 | 설명 |
 |---|---|---|
-| `fq_publish` | `int fq_publish(fq_queue *q, const void *data, size_t len, const char *stream_key)` | 메시지를 발행. `stream_key`는 `NULL` 허용(같은 key는 순서 보존 파티셔닝에 사용 가능). tmp→fsync→rename으로 원자적·내구적 발행. `stream_key` 형식이 어긋나면 `FQ_EINVAL`. |
+| `fq_publish` | `int fq_publish(fq_queue *q, const void *data, size_t len, const char *stream_key)` | 메시지를 발행. `stream_key`는 `NULL` 허용(같은 key는 순서 보존 파티셔닝에 사용 가능). tmp→fsync→rename으로 원자적·내구적 발행. `stream_key` 형식이 어긋나거나, 메시지 이름에 claim 접미사를 붙이면 한도를 넘으면(`node_id` + `stream_key` 160자 초과, 네이티브 Win32는 전체 경로 260자) `FQ_EINVAL`. 디스크가 차면 `FQ_ENOSPC`. `stream_key`는 이름에 들어가는 꼬리표일 뿐 라이브러리가 키별 순서·분배를 따로 하지 않는다(`m->name`에서 보인다). |
+
+### 순서 지정 발행
+
+`fq_publish`·`fq_adopt`는 꼬리에 넣는다(발행 시각 순). `_ex`는 `fq_order`로 자리를 고른다(`NULL` = 꼬리).
+자리는 이름 정렬로만 정해지고(메타파일 없음), 상태 전이는 여전히 rename 한 번이다.
+
+| 함수 | 시그니처 | 설명 |
+|---|---|---|
+| `fq_publish_ex` | `int fq_publish_ex(fq_queue *q, const void *data, size_t len, const char *stream_key, const fq_order *order)` | `fq_publish` + 자리 지정. |
+| `fq_adopt_ex` | `int fq_adopt_ex(fq_queue *q, const char *path, const char *stream_key, const fq_order *order)` | `fq_adopt` + 자리 지정. 대상이 없어 `FQ_EEMPTY`면 `path`는 그대로 남는다(`FQ_ENOENT` "이미 옮김"과 구분). |
+
+```c
+typedef struct {
+    int        mode;     /* FQ_ORDER_TAIL / FQ_ORDER_HEAD / FQ_ORDER_BEFORE */
+    fq_want_fn before;   /* FQ_ORDER_BEFORE: 대상 고르기 */
+    void      *ud;
+} fq_order;
+```
+
+| `mode` | 자리 |
+|---|---|
+| `FQ_ORDER_TAIL` | 꼬리(기본과 같다). |
+| `FQ_ORDER_HEAD` | 맨 앞. 꼬리 메시지 모두보다 앞이고, 맨 앞에 넣은 것끼리는 나중 것이 앞(LIFO). |
+| `FQ_ORDER_BEFORE` | `incoming/`을 앞에서부터 보며 `before(data, len, ud)`가 1을 돌려주는 첫 메시지 바로 앞. 같은 대상 앞에 여러 번 넣으면 넣은 순서대로 그 앞에 줄을 선다. 후보마다 파일을 읽으므로 `fq_claim_if`처럼 비싸다. 대상이 없으면 `FQ_EEMPTY`(아무것도 바뀌지 않음). |
+
+주의:
+
+- 끼워 넣은 메시지 앞에 다시 끼우기를 거듭하면 이름이 길어진다. `FQ_ORDER_NAME_MAX`(220자)를 넘으면
+  `FQ_EINVAL`(보통의 `node_id`로 5겹 안팎, 네이티브 Win32는 루트가 길면 더 얕게).
+- BEFORE는 대상의 정렬 키(`<ms>-<seq>`)만 쓰므로, 정렬 키가 같은 다른 producer의 메시지가 대상 앞에 있으면
+  그것보다도 앞에 들어간다(드묾: 같은 ms에 seq까지 같아야 한다).
+- `fq_claim`은 나열을 캐시하므로 다른 핸들이 맨 앞에 넣은 메시지는 캐시를 다 쓴 다음에 본다
+  (`fq_claim_if`·`fq_consume_if`는 매번 나열해 바로 본다). 노드가 여럿이면 HEAD끼리의 순서는 각자의 발행
+  시각(FS 시각) 순이다. `fq_return`은 여전히 꼬리로 되돌린다.
 
 ## 소비자 / 리더십 함수
 
@@ -79,8 +114,8 @@ typedef struct {
 |---|---|---|
 | `fq_acquire_leadership` | `int fq_acquire_leadership(fq_queue *q, fq_lease *lease)` | 리더십 획득 시도(식별자는 `q->node_id` 사용). 유효한 다른 리더가 있으면 `FQ_ELOCKED`. 성공 시 `lease`에 새 token 발급. |
 | `fq_renew_lease` | `int fq_renew_lease(fq_queue *q, fq_lease *lease)` | 하트비트. `election.lock` 안에서 여전히 내가 리더인지 확인하고 만료시각 연장. 아니면 `FQ_ENOLEADER`. 선출이 진행 중이라 락이 잡혀 있으면 `FQ_ELOCKED`(리더십은 유지될 수 있음 → 잠시 후 재시도). |
-| `fq_recover_stale` | `int fq_recover_stale(fq_queue *q, const fq_lease *lease)` | 옛 token의 inflight(죽은 선임자·좀비 것)를 `incoming/`으로 회수(attempt+1, 한도 초과 시 `dead/`). 인수 직후와 **매 하트비트마다** 호출. |
-| `fq_claim` | `int fq_claim(fq_queue *q, const fq_lease *lease, fq_msg **out)` | 가장 오래된 메시지를 점유. 비었으면 `FQ_EEMPTY`. 읽을 수 없는 메시지(권한·I/O 오류, 일반 파일이 아닌 항목)는 실패한 시도로 쳐서(attempt+1, 한도면 `dead/`) 건너뛴다. |
+| `fq_recover_stale` | `int fq_recover_stale(fq_queue *q, const fq_lease *lease)` | 옛 token의 inflight(죽은 선임자·좀비 것)와, 내 token이지만 이 핸들이 들고 있지 않은 고아(ack·nack 실패, ack 없이 해제)를 `incoming/`으로 회수(attempt+1, 한도 초과 시 `dead/`). 인수 직후와 **매 하트비트마다** 호출. 이 핸들이 들고 있는(처리 중인) 메시지는 token과 무관하게 건드리지 않는다. 그래서 lease는 그것을 얻은 핸들로만 claim할 것. |
+| `fq_claim` | `int fq_claim(fq_queue *q, const fq_lease *lease, fq_msg **out)` | 가장 오래된 메시지를 점유. 비었으면 `FQ_EEMPTY`. 읽을 수 없는 메시지(권한·I/O 오류, 일반 파일이 아닌 항목)는 실패한 시도로 쳐서(attempt+1, 한도면 `dead/`) 건너뛴다. claim 접미사를 붙이면 이름·경로 한도를 넘는 메시지(옛 버전·밖에서 넣은 것)는 같은 이름으로 `dead/`에 격리하고 건너뛴다. |
 | `fq_ack` | `int fq_ack(fq_queue *q, fq_msg *m)` | 처리 완료. inflight 삭제 + `m` 해제. `FQ_ENOENT` = 파일이 이미 없음(리스를 놓친 사이 회수됨 → 이 메시지는 다시 전달된다. 멱등 소비자면 무해). |
 | `fq_release_leadership` | `int fq_release_leadership(fq_queue *q, const fq_lease *lease)` | 정상 종료 시 리더십 반납. 아직 내 리스면 만료시각을 0으로 써서 대기 노드가 곧바로 인수한다. `FQ_ENOLEADER` 이미 내 리스 아님, `FQ_ELOCKED` 선출 중(재시도). |
 | `fq_nack` | `int fq_nack(fq_queue *q, fq_msg *m)` | 즉시 재큐잉(attempt+1). 한도 초과 시 `dead/`. `m` 해제. |
@@ -96,7 +131,7 @@ typedef struct {
 | 함수 | 시그니처 | 설명 |
 |---|---|---|
 | `fq_claim_if` | `int fq_claim_if(fq_queue *q, const fq_lease *lease, fq_want_fn want, void *ud, fq_msg **out)` | `incoming/`을 오래된 순으로 보며 `want(data, len, ud)`가 1을 돌려주는 첫 메시지를 claim(0이면 건너뜀). 후보마다 파일을 읽으므로 `fq_claim`보다 비싸다. 읽을 수 없는 메시지는 `fq_claim`과 같이 실패한 시도로 쳐서(attempt+1, 한도면 `dead/`) 건너뛴다. 원하는 메시지가 없으면 `FQ_EEMPTY`. |
-| `fq_release` | `int fq_release(fq_queue *q, fq_msg *m)` | claim한 메시지를 원래 이름 그대로 `incoming/`에 되돌린다(attempt·순서 유지, 들여다보기 용). 성공하면 `m` 해제. |
+| `fq_release` | `int fq_release(fq_queue *q, fq_msg *m)` | claim한 메시지를 원래 이름 그대로 `incoming/`에 되돌린다(attempt·순서 유지, 들여다보기 용). 성공하면 `m` 해제, 실패하면 `m`은 남는다(처리를 마치거나 `fq_msg_free`). |
 
 ```c
 typedef int (*fq_want_fn)(const void *data, size_t len, void *ud);
@@ -140,7 +175,7 @@ POSIX(Cygwin 등)에서는 존재 검사와 rename이 분리되어 있으므로 
 |---|---|---|
 | `fq_adopt` | `int fq_adopt(fq_queue *q, const char *path, const char *stream_key)` | 이미 영속된(fsync된) 파일 `path`를 새 메시지로 큐에 넣는다(발행 시각은 지금). `FQ_ENOENT` = `path`가 없음(이미 넣었음). |
 | `fq_take` | `int fq_take(fq_queue *q, fq_msg *m, const char *path)` | claim한 `m`을 큐에서 꺼내 `path`로 옮긴다(ack 대신). 성공하면 `m` 해제 + `path` 디렉터리 fsync. 실패하면 `m`은 claim 상태 그대로(`fq_nack` 가능; `FQ_EEXIST` = `path`가 이미 있음, `FQ_ENOENT` = 이미 회수됨). |
-| `fq_return` | `int fq_return(fq_queue *q, const char *path, uint32_t attempt)` | `fq_take`로 꺼낸 파일을 `fq_nack`처럼 되돌린다. `attempt`는 꺼낼 때의 `m->attempt`; attempt+1로 `incoming/`에 넣고 한도에 닿으면 `dead/`. 이름은 새로 붙어(시각 = 지금, stream_key 없음) 원래 순서·파티션은 유지되지 않는다. `FQ_ENOENT` = 이미 되돌렸음. |
+| `fq_return` | `int fq_return(fq_queue *q, const char *path, uint32_t attempt)` | `fq_take`로 꺼낸 파일을 `fq_nack`처럼 되돌린다. `attempt`는 꺼낼 때의 `m->attempt`; attempt+1로 `incoming/`에 넣고 한도에 닿으면 `dead/`. 이름은 새로 붙어(시각 = 지금, stream_key 없음) 원래 순서·`stream_key`는 유지되지 않는다. `FQ_ENOENT` = 이미 되돌렸음. |
 
 ## DLQ 함수
 

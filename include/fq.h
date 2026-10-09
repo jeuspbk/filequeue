@@ -67,7 +67,8 @@ int  fq_open(const char *root, const char *node_id, fq_queue **out);
 void fq_close(fq_queue *q);
 
 /* ---- Producer ---- */
-/* stream_key: NULL 허용. 같은 key는 같은 파티션으로 묶여 순서 보존에 사용 가능.
+/* stream_key: NULL 허용. 메시지 이름에 들어가는 꼬리표(m->name에서 보인다). 라이브러리가 키별 순서·분배를
+ *             따로 하지는 않는다(소비는 전역 이름 순).
  *             node_id와 같은 문자 규칙(1~127자). 어기면 FQ_EINVAL (fq_adopt도 동일).
  *             node_id 길이 + stream_key 길이는 160자 이하로 둘 것(넘으면 FQ_EINVAL일 수 있다): 메시지 이름에 재시도·claim
  *             접미사가 붙어도 파일명 한도(255자) 안이어야 한다. 네이티브 Win32(ANSI API)는 루트를 포함한

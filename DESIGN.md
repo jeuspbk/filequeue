@@ -304,8 +304,8 @@ ack 없이 해제한 메시지). 핸들은 claim해서 아직 들고 있는 메�
   Windows `ReadDirectoryChangesW`(로컬), Linux `inotify`를 최적화로 추가.
   단, 네트워크 공유에선 알림이 안 올 수 있으므로 폴링은 항상 유지.
 - **순서:** 단일 활성 소비자가 파일명 정렬 순으로 oldest-first 처리하면 best-effort FIFO.
-  엄격 순서가 필요하면 stream_key로 파티셔닝하여 파티션 내 순서만 보장
-  (실패 복구 시 중복으로 인한 미세 재정렬은 발생 가능).
+  (실패 복구 시 중복으로 인한 미세 재정렬은 발생 가능). stream_key는 이름의 꼬리표일 뿐 키별 순서·분배는
+  구현돼 있지 않다(키별 순서 = 전역 best-effort 순서). 먼저 처리할 것은 순서 지정 발행(HEAD/BEFORE)으로.
 - **2단계 발행/꺼내기 (`fq_adopt` / `fq_take`):** 트랜잭션 관리자(예: mica의 /Q 자원 관리자)가 메시지를 큐 밖
   (같은 파일시스템)의 파일에 보관했다가 결정에 따라 옮긴다. `fq_adopt` = 영속된 파일을 `incoming/`으로 rename
   (새 이름, 발행 시각 = 지금), `fq_take` = claim한 메시지를 `inflight/`에서 호출자의 파일로 rename(ack 대신).
