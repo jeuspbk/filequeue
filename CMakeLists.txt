@@ -26,11 +26,11 @@ add_library(filequeue STATIC
   src/fq_util.c
   ${FQ_FS_SRC}
 )
+find_package(Threads REQUIRED)   # fq_publish_batch의 병렬 기록, test_atomicity [6] 교체 중 동시 읽기
 target_include_directories(filequeue PUBLIC include)
+target_link_libraries(filequeue PUBLIC Threads::Threads)
 
 enable_testing()
-
-find_package(Threads REQUIRED)   # test_atomicity [6] 교체 중 동시 읽기
 
 add_executable(test_atomicity tests/test_atomicity.c)
 target_link_libraries(test_atomicity filequeue Threads::Threads)
@@ -59,6 +59,10 @@ add_test(NAME order COMMAND test_order)
 add_executable(test_dlq tests/test_dlq.c)
 target_link_libraries(test_dlq filequeue)
 add_test(NAME dlq COMMAND test_dlq)
+
+add_executable(test_batch tests/test_batch.c)
+target_link_libraries(test_batch filequeue)
+add_test(NAME batch COMMAND test_batch)
 
 # 다중 프로세스 드라이버 (CLI 예제 겸 동시성/failover 테스트용)
 add_executable(fq_producer examples/fq_producer.c)

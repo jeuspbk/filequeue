@@ -75,6 +75,25 @@ void fq_close(fq_queue *q);
  *             전체 경로도 접미사까지 260자 안이어야 한다(넘으면 FQ_EINVAL). */
 int  fq_publish(fq_queue *q, const void *data, size_t len, const char *stream_key);
 
+/* ---- 배치 발행 ----
+ * fq_publish를 n번 하는 것과 같은 결과(꼬리에, 항목 순서대로)를 더 적은 대기로 낸다:
+ *   1) 모든 항목의 stream_key·이름 길이를 먼저 검사(어긋나면 FQ_EINVAL, 아무것도 쓰지 않음)
+ *   2) 모두 tmp/에 기록+fsync — 내부 스레드(최대 FQ_BATCH_THREADS)로 겹친다. 하나라도 실패하면 이번 배치의
+ *      tmp를 모두 지우고 그 오류를 돌려준다(*published = 0, 큐는 그대로)
+ *   3) 항목 순서대로 incoming/으로 rename, 4) 디렉터리 fsync 한 번
+ * 내구성은 fq_publish와 같다: FQ_OK는 모든 항목이 영속된 뒤에만 돌려준다. 3) 도중 오류면 앞의 *published건만
+ * 발행된 채 오류를 돌려준다(나머지 tmp는 지운다). 3) 도중 크래시하면 앞쪽 일부만 발행됐을 수 있다 — fq_publish를
+ * n번 부르다 죽은 것과 같고, 남은 tmp는 fq_gc가 정리한다. 재시도하면 이미 발행된 것은 중복된다(at-least-once).
+ * 이득은 저장소에 따라 다르다(BENCHMARK.md): Linux ext4는 fsync가 겹쳐 수 배, Windows NTFS는 파일 닫기 비용이
+ * 커서 15~20% 안팎. published는 NULL이어도 된다. 꼬리 발행만 지원(순서 지정은 fq_publish_ex). */
+#define FQ_BATCH_THREADS 8
+typedef struct {
+    const void *data;
+    size_t      len;
+    const char *stream_key;     /* NULL 허용 */
+} fq_item;
+int  fq_publish_batch(fq_queue *q, const fq_item *items, size_t n, size_t *published);
+
 /* ---- Consumer / 리더십 (Active-Passive) ---- */
 /* node_id는 fq_open에서 설정한 q->node_id를 사용한다.
  * lease는 그것을 얻은 핸들로만 claim·recover할 것: fq_recover_stale은 "내 token인데 이 핸들이 들고

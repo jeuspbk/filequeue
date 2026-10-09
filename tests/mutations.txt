@@ -32,3 +32,7 @@ N13 claim_if 읽기 실패를 시도로 안 침#src/fq_queue.c#if (mrc == FQ_OK 
 N14 BEFORE 이름 길이 한도 제거(등가 변이: 끼울 때마다 28자라 FQ_MSG_NAME_MAX 228과 같은 깊이에서 멈춤 → 놓침이 정상)#src/fq_queue.c#if (total > FQ_ORDER_NAME_MAX || total >= n) return FQ_EINVAL;#if (total >= n) return FQ_EINVAL;
 N15 일반 파일이 아닌 항목도 읽음(디렉터리를 빈 메시지로)#src/fq_fs_posix.c#if (!S_ISREG(st.st_mode)) { close(fd); return FQ_ERR; }#;
 N16 메시지 시각에 FS 시각 오프셋 미적용(한 머신에선 FS 시각 = 로컬 시계라 놓침이 정상, 교차 머신 실측으로 검증)#src/fq_queue.c#q->clock_offset_ms = (int64_t)fs_now - (int64_t)wall;#q->clock_offset_ms = 0; (void)fs_now;
+B01 배치: 기록 실패 시 성공한 tmp를 안 지움#src/fq_queue.c#if (e[i].rc == FQ_OK) fq_fs_unlink(e[i].tmp);#;
+B02 배치: 일부 기록 실패를 무시하고 발행#src/fq_queue.c#if (e[i].rc != FQ_OK) { err = e[i].rc; break; }#;
+B03 배치: 발행 건수를 안 알려 줌#src/fq_queue.c#if (published) *published = done;#;
+B04 배치: stream_key 검증 생략#src/fq_queue.c#!fq_valid_ident(items[i].stream_key, FQ_STREAM_KEY_MAX))#0)

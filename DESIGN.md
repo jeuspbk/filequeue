@@ -309,6 +309,10 @@ ack 없이 해제한 메시지). 핸들은 claim해서 아직 들고 있는 메�
 - **순서:** 단일 활성 소비자가 파일명 정렬 순으로 oldest-first 처리하면 best-effort FIFO.
   (실패 복구 시 중복으로 인한 미세 재정렬은 발생 가능). stream_key는 이름의 꼬리표일 뿐 키별 순서·분배는
   구현돼 있지 않다(키별 순서 = 전역 best-effort 순서). 먼저 처리할 것은 순서 지정 발행(HEAD/BEFORE)으로.
+- **배치 발행 (`fq_publish_batch`):** 메시지 = 파일이라 파일 수는 줄지 않는다. 대신 기록+fsync를 내부 스레드로 겹치고
+  디렉터리 fsync를 한 번으로 줄인다. 기록이 모두 성공해야 rename을 시작하므로(하나라도 실패하면 tmp를 모두 지움) 실패한
+  배치는 큐에 흔적을 남기지 않는다. rename 도중 크래시는 `fq_publish` n번 중 크래시와 같다(앞쪽 일부 발행, at-least-once).
+  라이브러리가 스레드를 쓰는 곳은 여기뿐이다(`fq_run_parallel`, `fq_util.c`). 핸들 `q`는 호출 스레드만 만진다.
 - **2단계 발행/꺼내기 (`fq_adopt` / `fq_take`):** 트랜잭션 관리자(예: mica의 /Q 자원 관리자)가 메시지를 큐 밖
   (같은 파일시스템)의 파일에 보관했다가 결정에 따라 옮긴다. `fq_adopt` = 영속된 파일을 `incoming/`으로 rename
   (새 이름, 발행 시각 = 지금), `fq_take` = claim한 메시지를 `inflight/`에서 호출자의 파일로 rename(ack 대신).
@@ -334,6 +338,7 @@ void fq_close(fq_queue *q);
 
 /* Producer */
 int  fq_publish(fq_queue *q, const void *data, size_t len, const char *stream_key /*nullable*/);
+int  fq_publish_batch(fq_queue *q, const fq_item *items, size_t n, size_t *published);  /* 기록·fsync를 스레드로 겹침 */
 
 /* Consumer: 통합 wrapper (리더십·하트비트·stale 복구 자동) */
 int  fq_consume(fq_queue *q, fq_msg **out);   /* FQ_OK / FQ_EEMPTY / FQ_ELOCKED(대기) */

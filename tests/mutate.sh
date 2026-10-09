@@ -9,7 +9,7 @@ set -u
 LIST="${1:-tests/mutations.txt}"
 M=build/mut; mkdir -p $M
 OUT=$M/result.txt; : > $OUT
-UNIT="test_atomicity test_basic test_consume test_twophase test_clock test_order test_dlq"
+UNIT="test_atomicity test_basic test_consume test_twophase test_clock test_order test_dlq test_batch"
 grep -v '^#' "$LIST" | while IFS='#' read -r label file from to; do
   [ -z "$label" ] && continue
   T=$M/tree; rm -rf $T; mkdir -p $T; cp -r src include tests examples $T/

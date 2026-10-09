@@ -1,7 +1,8 @@
 /* fq_bench.c - 처리량 벤치마크
  *
- * 사용: fq_bench <queue_root> <count> <record_size> [mode]
+ * 사용: fq_bench <queue_root> <count> <record_size> [mode] [batch]
  *   mode: both(기본) | send | recv
+ *   batch: 송신을 fq_publish_batch로 이만큼씩 묶는다(기본 1 = fq_publish)
  *
  * SEND 단계: record_size 바이트 메시지를 count개 발행하고 송신 msg/s 측정.
  * RECV 단계: 큐가 빌 때까지 fq_consume/ack 하며 수신 msg/s 측정. 실제 소비 루프와 같이 리더십 획득·
@@ -29,6 +30,8 @@ int main(int argc, char **argv)
     const char *mode  = argc > 4 ? argv[4] : "both";
     int do_send = strcmp(mode, "recv") != 0;
     int do_recv = strcmp(mode, "send") != 0;
+    long batch = argc > 5 ? strtol(argv[5], NULL, 10) : 1;
+    if (batch < 1) batch = 1;
 
     char *buf = (char *)malloc(rec ? rec : 1);
     if (!buf) { fprintf(stderr, "oom\n"); return 1; }
@@ -37,17 +40,30 @@ int main(int argc, char **argv)
     fq_queue *q = NULL;
     if (fq_open(root, "bench", &q) != FQ_OK) { fprintf(stderr, "fq_open(%s) 실패\n", root); return 1; }
 
-    printf("== fq_bench: count=%ld record=%zuB root=%s ==\n", count, rec, root);
+    printf("== fq_bench: count=%ld record=%zuB batch=%ld root=%s ==\n", count, rec, batch, root);
     int failed = 0;
 
     if (do_send) {
         uint64_t t0 = fq_now_mono_ms();
         long sent = 0, err = 0;
         int last = FQ_OK;
-        for (long i = 0; i < count; i++) {
-            int rc = fq_publish(q, buf, rec, NULL);
-            if (rc == FQ_OK) sent++; else { err++; last = rc; }
-            if ((i + 1) % 10000 == 0) fprintf(stderr, "  [send] %ld\n", i + 1);
+        if (batch == 1) {
+            for (long i = 0; i < count; i++) {
+                int rc = fq_publish(q, buf, rec, NULL);
+                if (rc == FQ_OK) sent++; else { err++; last = rc; }
+                if ((i + 1) % 10000 == 0) fprintf(stderr, "  [send] %ld\n", i + 1);
+            }
+        } else {
+            fq_item *it = (fq_item *)malloc((size_t)batch * sizeof(*it));
+            if (!it) { fprintf(stderr, "oom\n"); return 1; }
+            for (long k = 0; k < batch; k++) { it[k].data = buf; it[k].len = rec; it[k].stream_key = NULL; }
+            for (long i = 0; i < count; i += batch) {
+                size_t n = (size_t)(count - i < batch ? count - i : batch), pub = 0;
+                int rc = fq_publish_batch(q, it, n, &pub);
+                sent += (long)pub;
+                if (rc != FQ_OK) { err += (long)(n - pub); last = rc; }
+            }
+            free(it);
         }
         double s = (fq_now_mono_ms() - t0) / 1000.0;
         printf("SEND: %ld msgs in %.3f s  ->  %.0f msg/s  (%.2f MB/s)\n",

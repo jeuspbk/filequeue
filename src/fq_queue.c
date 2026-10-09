@@ -192,6 +192,80 @@ int fq_publish_ex(fq_queue *q, const void *data, size_t len, const char *stream_
     return FQ_OK;
 }
 
+/* ---- 배치 발행 (fq.h) ---- */
+
+typedef struct {
+    char        msg[1408];   /* incoming/ 최종 경로 */
+    char        tmp[1408];   /* tmp/ 임시 경로 */
+    const void *data;
+    size_t      len;
+    int         rc;          /* 기록 결과 */
+} batch_ent;
+
+typedef struct { batch_ent *e; size_t n, step; } batch_job;
+
+/* 스레드 k는 k, k+step, k+2*step ... 번째 항목을 기록한다(나눠 맡아 원자적 카운터가 필요 없다) */
+static void batch_write(void *arg, size_t k)
+{
+    batch_job *j = (batch_job *)arg;
+    for (size_t i = k; i < j->n; i += j->step)
+        j->e[i].rc = fq_fs_write_sync(j->e[i].tmp, j->e[i].data, j->e[i].len);
+}
+
+int fq_publish_batch(fq_queue *q, const fq_item *items, size_t n, size_t *published)
+{
+    if (published) *published = 0;
+    if (n == 0) return FQ_OK;
+    if (!items) return FQ_EINVAL;
+    for (size_t i = 0; i < n; i++)
+        if (items[i].stream_key && items[i].stream_key[0] &&
+            !fq_valid_ident(items[i].stream_key, FQ_STREAM_KEY_MAX))
+            return FQ_EINVAL;
+
+    batch_ent *e = (batch_ent *)calloc(n, sizeof(*e));
+    if (!e) return FQ_ERR;
+
+    /* 1) 이름: 항목 순서대로 만들어 정렬 순서 = 항목 순서(시각은 단조, 같은 ms면 seq가 는다) */
+    for (size_t i = 0; i < n; i++) {
+        char id[64], tmp_name[192];
+        fq_gen_id(id, sizeof(id));
+        int rc = incoming_path(q, id, items[i].stream_key, NULL, e[i].msg, sizeof(e[i].msg));
+        if (rc != FQ_OK) { free(e); return rc; }        /* 이름 길이: 아무것도 쓰지 않았다 */
+        snprintf(tmp_name, sizeof(tmp_name), "%s-%s.tmp", q->node_id, id);
+        fq_path(e[i].tmp, sizeof(e[i].tmp), q->root, FQ_DIR_TMP, tmp_name);
+        e[i].data = items[i].data;
+        e[i].len  = items[i].len;
+    }
+
+    /* 2) 기록 + fsync를 겹쳐서. 하나라도 실패하면 이번 배치의 tmp를 모두 지우고 끝(큐는 그대로) */
+    batch_job job = { e, n, n < FQ_BATCH_THREADS ? n : FQ_BATCH_THREADS };
+    fq_run_parallel(job.step, batch_write, &job);
+    int err = FQ_OK;
+    for (size_t i = 0; i < n; i++)
+        if (e[i].rc != FQ_OK) { err = e[i].rc; break; }   /* FQ_ENOSPC 또는 FQ_ERR */
+    if (err != FQ_OK) {
+        for (size_t i = 0; i < n; i++)
+            if (e[i].rc == FQ_OK) fq_fs_unlink(e[i].tmp);  /* 실패한 것은 fq_fs_write_sync가 이미 지웠다 */
+        free(e);
+        return err;
+    }
+
+    /* 3) 항목 순서대로 발행. 도중 실패하면 앞의 것만 발행된 채 나머지 tmp를 지운다 */
+    size_t done = 0;
+    int rc = FQ_OK;
+    for (; done < n; done++) {
+        rc = fq_fs_rename(e[done].tmp, e[done].msg);
+        if (rc != FQ_OK) break;
+    }
+    for (size_t i = done; i < n; i++) fq_fs_unlink(e[i].tmp);
+
+    /* 4) 디렉터리 영속화 한 번 */
+    if (done) fsync_incoming(q);
+    if (published) *published = done;
+    free(e);
+    return rc;
+}
+
 /* ---- 2단계 발행 / 꺼내기 (트랜잭션 큐용, fq.h 참고) ---- */
 
 int fq_adopt(fq_queue *q, const char *path, const char *stream_key)

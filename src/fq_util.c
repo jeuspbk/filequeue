@@ -105,6 +105,48 @@ void fq_sleep_ms(unsigned ms)
 #endif
 }
 
+/* ---- 병렬 실행 (fq_internal.h) ---- */
+#define FQ_PAR_MAX 16
+typedef struct { void (*fn)(void *, size_t); void *arg; size_t k; } par_task;
+
+#if defined(_WIN32) && !defined(__CYGWIN__)
+static DWORD WINAPI par_main(LPVOID p) { par_task *t = (par_task *)p; t->fn(t->arg, t->k); return 0; }
+#else
+#  include <pthread.h>
+static void *par_main(void *p) { par_task *t = (par_task *)p; t->fn(t->arg, t->k); return NULL; }
+#endif
+
+void fq_run_parallel(size_t n, void (*fn)(void *arg, size_t k), void *arg)
+{
+    if (n > FQ_PAR_MAX) n = FQ_PAR_MAX;
+    par_task tasks[FQ_PAR_MAX];
+    int started[FQ_PAR_MAX] = {0};
+#if defined(_WIN32) && !defined(__CYGWIN__)
+    HANDLE th[FQ_PAR_MAX];
+#else
+    pthread_t th[FQ_PAR_MAX];
+#endif
+    for (size_t k = 1; k < n; k++) {
+        tasks[k].fn = fn; tasks[k].arg = arg; tasks[k].k = k;
+#if defined(_WIN32) && !defined(__CYGWIN__)
+        th[k] = CreateThread(NULL, 0, par_main, &tasks[k], 0, NULL);
+        started[k] = th[k] != NULL;
+#else
+        started[k] = pthread_create(&th[k], NULL, par_main, &tasks[k]) == 0;
+#endif
+    }
+    if (n) fn(arg, 0);
+    for (size_t k = 1; k < n; k++) {
+        if (!started[k]) { fn(arg, k); continue; }   /* 스레드를 못 만들었으면 여기서 */
+#if defined(_WIN32) && !defined(__CYGWIN__)
+        WaitForSingleObject(th[k], INFINITE);
+        CloseHandle(th[k]);
+#else
+        pthread_join(th[k], NULL);
+#endif
+    }
+}
+
 /* 프로세스 전역 카운터. 스레드마다 핸들을 따로 열어 발행해도 id가 겹치지 않도록 원자적으로 늘린다.
  * (node_id가 같으므로 id가 겹치면 tmp 이름이 같아져 한쪽 메시지가 조용히 사라진다.) */
 #if defined(_WIN32) && !defined(__CYGWIN__)

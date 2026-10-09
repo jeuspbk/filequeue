@@ -72,7 +72,27 @@ typedef struct {
 
 | 함수 | 시그니처 | 설명 |
 |---|---|---|
-| `fq_publish` | `int fq_publish(fq_queue *q, const void *data, size_t len, const char *stream_key)` | 메시지를 발행. `stream_key`는 `NULL` 허용(같은 key는 순서 보존 파티셔닝에 사용 가능). tmp→fsync→rename으로 원자적·내구적 발행. `stream_key` 형식이 어긋나거나, 메시지 이름에 claim 접미사를 붙이면 한도를 넘으면(`node_id` + `stream_key` 160자 초과, 네이티브 Win32는 전체 경로 260자) `FQ_EINVAL`. 디스크가 차면 `FQ_ENOSPC`. `stream_key`는 이름에 들어가는 꼬리표일 뿐 라이브러리가 키별 순서·분배를 따로 하지 않는다(`m->name`에서 보인다). |
+| `fq_publish` | `int fq_publish(fq_queue *q, const void *data, size_t len, const char *stream_key)` | 메시지를 발행. `stream_key`는 `NULL` 허용. tmp→fsync→rename으로 원자적·내구적 발행. `stream_key` 형식이 어긋나거나, 메시지 이름에 claim 접미사를 붙이면 한도를 넘으면(`node_id` + `stream_key` 160자 초과, 네이티브 Win32는 전체 경로 260자) `FQ_EINVAL`. 디스크가 차면 `FQ_ENOSPC`. `stream_key`는 이름에 들어가는 꼬리표일 뿐 라이브러리가 키별 순서·분배를 따로 하지 않는다(`m->name`에서 보인다). |
+| `fq_publish_batch` | `int fq_publish_batch(fq_queue *q, const fq_item *items, size_t n, size_t *published)` | `fq_publish`를 n번 한 것과 같은 결과(꼬리에, 항목 순서대로)를 더 적은 대기로. 아래 참고. |
+
+### 배치 발행
+
+```c
+typedef struct { const void *data; size_t len; const char *stream_key; } fq_item;
+```
+
+1. 모든 항목의 `stream_key`·이름 길이를 먼저 검사한다 — 어긋나면 `FQ_EINVAL`, 아무것도 쓰지 않는다.
+2. 모두 `tmp/`에 기록 + fsync. 내부 스레드(최대 `FQ_BATCH_THREADS` = 8)로 겹친다. **하나라도 실패하면 이번 배치의
+   tmp를 모두 지우고 그 오류를 돌려준다**(`*published = 0`, 큐는 그대로).
+3. 항목 순서대로 `incoming/`으로 rename, 4. 디렉터리 fsync 한 번.
+
+내구성은 `fq_publish`와 같다: `FQ_OK`는 모든 항목이 영속된 뒤에만 돌아온다. 3단계 도중 오류면 앞의 `*published`건만
+발행된 채 오류를 돌려주고, 3단계 도중 크래시하면 앞쪽 일부만 발행됐을 수 있다(`fq_publish`를 n번 부르다 죽은 것과 같다.
+남은 tmp는 `fq_gc`가 정리). 재시도하면 이미 발행된 것은 중복된다(at-least-once).
+
+이득은 저장소에 따라 크게 다르다(1 KB, 100건씩, `BENCHMARK.md`): Linux ext4 약 7.6배, 네이티브 Win32(NTFS) 약 2.4배,
+Cygwin(NTFS) 약 1.3배. Linux는 겹친 fsync를 저널 커밋 하나로 묶어 주고, NTFS는 새로 쓴 파일을 닫는 비용이 커서 덜 준다.
+순서 지정(HEAD·BEFORE)은 지원하지 않는다(`fq_publish_ex`를 쓸 것).
 
 ### 순서 지정 발행
 

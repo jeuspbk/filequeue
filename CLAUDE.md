@@ -50,7 +50,7 @@ bash tests/mutate.sh            # 결과: build/mut/result.txt, "놓침"이면 �
 ```bash
 P=$PWD; O=<스크래치 디렉터리>; CC=x86_64-w64-mingw32-gcc; FL="-std=c11 -O1 -Wall -Wextra -I$P/include"
 (cd "$O" && $CC $FL -c "$P"/src/*.c)   # 서브셸 안의 $PWD는 $O가 된다
-for t in test_atomicity test_basic test_consume test_twophase test_clock test_election test_order test_dlq; do $CC $FL -o "$O/$t.exe" tests/$t.c "$O"/*.o; done
+for t in test_atomicity test_basic test_consume test_twophase test_clock test_election test_order test_dlq test_batch; do $CC $FL -o "$O/$t.exe" tests/$t.c "$O"/*.o; done
 for e in fq_producer fq_consumer; do $CC $FL -o "$O/$e.exe" examples/$e.c "$O"/*.o; done
 "$O/test_basic.exe" "$O/q"   # 네이티브 exe에는 Windows 경로(C:/...)를 줄 것 (/tmp 불가). 루트는 짧게:
                              # 전체 경로 260자 한도라 긴 스크래치 경로에선 순서 지정 등이 FQ_EINVAL로 거절된다
@@ -158,6 +158,9 @@ fq_fs_posix.c / fq_fs_win32.c   (플랫폼 원자 연산 추상화)
   (token +1) 처리 중인 메시지가 옛 token으로 남는데, 이를 회수하면 같은 소비자에게 다시 주고 attempt를 헛되이 올린다.
 - **Cygwin 빌드를 SMB 공유에서 쓰지 말 것**: leader.info 교체가 깨져 하트비트 전멸·리더십 탈취가 관측됐다
   (`DESIGN.md` §0 SMB 실측). SMB는 네이티브 Win32 빌드로. loopback SMB(`//localhost/D$/...`)로 재현 가능.
+- 라이브러리가 스레드를 쓰는 곳은 `fq_publish_batch`의 병렬 기록(`fq_util.c`의 `fq_run_parallel`)뿐이다. 작업 스레드는
+  미리 만든 경로와 `fq_fs_write_sync`만 다루고 핸들 `q`는 호출 스레드만 만진다(핸들은 스레드 안전하지 않다).
+  POSIX 링크에는 `-pthread`가 필요하다(CMake는 `Threads::Threads`를 PUBLIC으로 전파).
 - 방어 로직(fencing·재검증·락 보유자 확인 등)을 추가하거나 바꾸면 `tests/mutations.txt`에 변이를 넣고
   `tests/mutate.sh`로 그것을 끈 코드가 테스트에 걸리는지 확인할 것. 타이밍 경합이라 스레드로 재현되지 않는 틈은
   `fq_internal.h`의 테스트 훅(`fq_test_hook_before_elock`, `fq_election_reclaim`)으로 결정적으로 만든다.

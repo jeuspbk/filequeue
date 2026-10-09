@@ -24,7 +24,7 @@ cmake --build build                        # 빌드
 
 - `build/libfilequeue.a` — 정적 라이브러리
 - `build/test_atomicity`, `build/test_basic`, `build/test_consume`, `build/test_twophase`,
-  `build/test_clock`, `build/test_order`, `build/test_dlq` — 단위 테스트 (`ctest` 등록)
+  `build/test_clock`, `build/test_order`, `build/test_dlq`, `build/test_batch` — 단위 테스트 (`ctest` 등록)
 - `build/test_election` — 리더 선출 경합(split-brain) 검사. 동시성 스크립트가 자동으로 사용
 - `build/fq_producer`, `build/fq_consumer` — CLI 예제 겸 테스트 드라이버
 - `build/fq_bench` — 처리량 벤치마크 (`BENCHMARK.md` 참고)
@@ -72,7 +72,8 @@ Cygwin은 POSIX를 제공하므로 항상 POSIX 경로로 빌드된다. 네이�
 `include/`를 인클루드 경로에 추가하고 `libfilequeue.a`를 링크한다.
 
 ```bash
-cc myapp.c -I/path/to/filequeue/include -L/path/to/filequeue/build -lfilequeue -o myapp
+cc myapp.c -I/path/to/filequeue/include -L/path/to/filequeue/build -lfilequeue -o myapp -pthread
 ```
 
-CMake 프로젝트라면 `filequeue` 타깃에 링크하면 인클루드 경로가 자동 전파된다.
+CMake 프로젝트라면 `filequeue` 타깃에 링크하면 인클루드 경로가 자동 전파된다. 라이브러리는 `fq_publish_batch`의
+병렬 기록에 스레드를 쓰므로 POSIX에서는 `-pthread`가 필요하다(CMake 타깃은 `Threads::Threads`를 함께 전파한다).

@@ -72,6 +72,9 @@ uint32_t fq_pid(void);
 void     fq_gen_id(char *buf, size_t n);       /* 유일 토큰 hex (pid+salt+카운터+time). 스레드 안전 */
 void     fq_default_node_id(char *buf, size_t n); /* "<호스트명>-<pid>" (식별자 규칙에 맞게 정리) */
 void     fq_sleep_ms(unsigned ms);
+/* fn(arg, k)를 k = 0..n-1에 대해 동시에 실행하고 모두 끝날 때까지 기다린다(k = 0은 호출 스레드).
+ * 스레드를 만들지 못한 k는 호출 스레드에서 차례로 실행한다(결과는 같고 느릴 뿐). fq_publish_batch가 쓴다. */
+void     fq_run_parallel(size_t n, void (*fn)(void *arg, size_t k), void *arg);
 /* 경로 앞의 만들 수 없는 접두부 길이: 드라이브 "X:"는 2, UNC "\\srv\share"·"//srv/share"는
  * share 뒤 구분자의 위치, 그 밖에는 0. fq_fs_mkdirs가 이 부분을 건너뛴다. */
 size_t   fq_path_root_len(const char *path);
