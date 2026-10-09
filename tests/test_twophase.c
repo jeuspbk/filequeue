@@ -88,11 +88,17 @@ int main(int argc, char **argv)
     CHECK(fq_consume(q, &m3) == FQ_OK && m3, "consume");
     char bad[600];
     snprintf(bad, sizeof(bad), "%s/no/such/dir/x", root);
-    CHECK(m3 && fq_take(q, m3, bad) != FQ_OK, "없는 디렉터리로 take: 실패");
+    /* take가 뜻밖에 성공하면 m3은 이미 해제됐다: 이후 단계가 해제된 m3을 건드리지 않게 NULL로(크래시는 이 셸에서
+     * 종료 코드 0으로 보여 통과로 오인된다) */
+    int trc = m3 ? fq_take(q, m3, bad) : FQ_ERR;
+    if (trc == FQ_OK) m3 = NULL;
+    CHECK(trc != FQ_OK, "없는 디렉터리로 take: 실패");
     char busy[600];
     snprintf(busy, sizeof(busy), "%s/busy", stage);
     CHECK(fq_fs_write_sync(busy, "keep", 4) == FQ_OK, "이미 있는 대상 파일");
-    CHECK(m3 && fq_take(q, m3, busy) == FQ_EEXIST, "있는 파일로 take: FQ_EEXIST (덮어쓰지 않음)");
+    trc = m3 ? fq_take(q, m3, busy) : FQ_ERR;
+    if (trc == FQ_OK) m3 = NULL;
+    CHECK(trc == FQ_EEXIST, "있는 파일로 take: FQ_EEXIST (덮어쓰지 않음)");
     {
         void *buf = NULL; size_t len = 0;
         CHECK(fq_fs_read_file(busy, &buf, &len) == FQ_OK && len == 4 && memcmp(buf, "keep", 4) == 0,

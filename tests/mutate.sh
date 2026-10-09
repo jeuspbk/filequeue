@@ -25,9 +25,13 @@ grep -v '^#' "$LIST" | while IFS='#' read -r label file from to; do
   caught=""
   for t in $UNIT; do
     R=$M/r_$t; rm -rf $R $R-*                 # test_basic은 <root>-lead 같은 형제 디렉터리도 쓴다
-    timeout 120 $B/$t.exe $R > $M/$t.log 2>&1 || caught="$caught $t"
+    # 종료 코드만 믿지 말 것: git-bash에서 띄운 Cygwin 프로그램은 크래시해도 0으로 끝난다(출력 버퍼도 잃음).
+    # 마지막 요약 줄("0 실패" / "0 fail" / "== OK ==")이 있어야 통과다. 없으면 크래시로 보고 표시한다.
+    if ! timeout 120 $B/$t.exe $R > $M/$t.log 2>&1; then caught="$caught $t"
+    elif ! tail -n 3 $M/$t.log | grep -qE '[(]0 (실패|fail)[)]|== OK =='; then caught="$caught $t(요약 없음)"; fi
   done
-  timeout 300 bash $T/tests/test_concurrency.sh $B/fq_producer.exe $B/fq_consumer.exe > $M/conc.log 2>&1 \
+  { timeout 300 bash $T/tests/test_concurrency.sh $B/fq_producer.exe $B/fq_consumer.exe > $M/conc.log 2>&1 \
+      && tail -n 1 $M/conc.log | grep -q 'PASS (0 실패)'; } \
     || { caught="$caught concurrency($(grep -c FAIL $M/conc.log))"; cp $M/conc.log "$M/conc_${label%% *}.log"; }
   echo "$label ::${caught:- 놓침}" | tee -a $OUT
 done

@@ -112,6 +112,26 @@ int main(int argc, char **argv)
         CHECK(fq_dead_drop(q, lname) == FQ_OK, "  ... 버릴 수는 있다");
     }
 
+    printf("[4] 되살린 메시지는 시각이 오래돼, 나열 캐시가 차 있어도 바로 다음에 나온다\n");
+    {
+        poison(q, "old");
+        seen_t so = {0};
+        fq_dead_list(q, collect, &so);
+        fq_publish(q, "c1", 2, NULL);
+        fq_publish(q, "c2", 2, NULL);
+        fq_publish(q, "c3", 2, NULL);
+        m = NULL;
+        CHECK(fq_consume(q, &m) == FQ_OK && m && m->len == 2 && memcmp(m->data, "c1", 2) == 0,
+              "c1 (fq_claim의 캐시에 c2 c3가 남음)");
+        if (m) fq_ack(q, m);
+        CHECK(so.n == 1 && fq_redrive(q, so.name) == FQ_OK, "old 되살리기");
+        m = NULL;
+        CHECK(fq_consume(q, &m) == FQ_OK && m && m->len == 3 && memcmp(m->data, "old", 3) == 0,
+              "  ... 다음은 old (캐시의 c2보다 앞)");
+        if (m) fq_ack(q, m);
+        while (fq_consume(q, &m) == FQ_OK) fq_ack(q, m);
+    }
+
     fq_close(q);
     printf("\n== 결과: %s (%d 실패) ==\n", fails ? "FAIL" : "PASS", fails);
     return fails ? 1 : 0;

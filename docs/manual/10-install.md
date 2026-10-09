@@ -42,7 +42,13 @@ ctest --test-dir build --output-on-failure
 # 다중 프로세스 동시성 + failover 테스트 (bash 필요)
 bash tests/test_concurrency.sh ./build/fq_producer ./build/fq_consumer
 # [C] 구간은 ./build/test_election 을 자동으로 찾아 리더 선출 경합(split-brain)을 검사한다
+
+# 변이 테스트 (선택, 약 30분): 방어 로직을 하나씩 끈 코드로 위 테스트를 돌려 잡아내는지 확인
+bash tests/mutate.sh      # 결과: build/mut/result.txt ("놓침" = 그 방어를 검사하는 테스트가 없음)
 ```
+
+> 동시성 테스트의 [B]는 활성 소비자가 메시지를 처리했지만 ack하기 전에 `kill -9`로 죽이고, 새 리더가 그
+> 메시지를 회수해 다시 전달하는지(중복 1건)까지 확인한다. "유실 없음"만 보면 회수가 고장 나도 통과하기 때문이다.
 
 > 동시성 테스트는 `ctest`에 등록돼 있지 않다. 혼합 셸 환경(cygwin `ctest` ↔ git-bash)에서
 > 경로 표기(`/cygdrive/d` vs `/d`)가 달라 자동 실행이 불안정하기 때문이며, 스크립트 자체는

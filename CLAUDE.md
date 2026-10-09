@@ -29,6 +29,10 @@ bash tests/test_concurrency.sh ./build/fq_producer.exe ./build/fq_consumer.exe
 bash tests/mutate.sh            # 결과: build/mut/result.txt, "놓침"이면 그 방어를 검사하는 테스트가 없다
 ```
 
+**주의: 이 머신의 Bash 툴(git-bash)에서 띄운 Cygwin 프로그램은 크래시해도 종료 코드 0으로 끝나고 출력 버퍼도
+잃는다.** 테스트 통과는 종료 코드가 아니라 마지막 요약 줄(`0 실패` / `0 fail` / `== OK ==`)로 판단할 것
+(`tests/mutate.sh`도 그렇게 한다 — 18차에 크래시한 변이가 "놓침"으로 보였던 원인).
+
 **테스트가 2계층인 이유:** `ctest`에는 C 단위 테스트만 등록돼 있다. 동시성/failover 테스트는
 실제 프로세스를 띄우는 bash 스크립트이며, **cygwin ctest와 git-bash의 경로 표기 차이
 (`/cygdrive/d` vs `/d`)** 때문에 ctest 자동 실행이 불안정하여 수동 실행으로 분리했다.

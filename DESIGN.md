@@ -82,7 +82,7 @@
   tmp/            # 쓰기 스테이징 (atomic publish 전 임시 파일)
   incoming/       # 발행 완료, 소비 대기 (producer가 rename으로 투입)
   inflight/       # 활성 소비자가 claim하여 처리 중
-  dead/           # DLQ: N회 재시도 실패한 poison 메시지
+  dead/           # DLQ: N회 재시도 실패한 poison 메시지, claim할 수 없어 격리된 메시지(긴 이름)
   control/
     election.lock # 리더 선출용 배타 생성 mutex (CREATE_NEW)
     leader.info   # 현재 리더 id, fencing token, 리스 만료시각(FS 시각). 하트비트 = 이 파일의 원자 교체
@@ -292,7 +292,10 @@ ack 없이 해제한 메시지). 핸들은 claim해서 아직 들고 있는 메�
 
 ## 5. 부가 메커니즘
 
-- **Poison 메시지 / DLQ:** `attempt`가 N 초과 시 `dead/`로 이동(무한 재처리 루프 차단).
+- **Poison 메시지 / DLQ:** `attempt`가 N 초과 시 `dead/`로 이동(무한 재처리 루프 차단). 이름의 `.a<N>`는 남긴다
+  (nack·회수·`fq_return` 모두 — `fq_dead_list`가 attempt를 보여 준다). `attempt + 1`은 넘치지 않게 `attempt >= N - 1`로
+  비교한다. claim 접미사를 붙일 수 없는 이름도 같은 이름으로 격리한다. 운영자는 `fq_dead_list`로 보고
+  `fq_redrive`(attempt 0으로 `incoming/`)·`fq_dead_drop`으로 처리한다 — 둘 다 rename/unlink 한 번.
 - **오류 내성:** 리더의 하트비트가 일시 오류(fsync 실패, NFS 정지, 디스크 풀)로 실패해도 FS상 리스가
   유효한 동안은 claim을 계속하고 갱신을 잠시 뒤 다시 시도한다(락 보유와 같은 처리). 끝내 갱신하지
   못하면 리스 자체 만료 감지가 내려놓는다. `fq_fs_write_sync`는 실패 시 반쯤 쓰인 파일을 지우고 공간
@@ -373,4 +376,8 @@ int  fq_dead_drop(fq_queue *q, const char *name);          /* 영구 삭제 */
 3. **발행·소비 골격** — `fq_publish` / `fq_claim` / `fq_ack`.
 4. **리더 선출** — `fq_acquire_leadership` / `fq_renew_lease`.
 5. **Stale 복구** — `fq_recover_stale`.
-6. **크래시 주입 테스트** — 각 단계에서 강제 종료 후 재기동하여 §3 표를 검증.
+6. **크래시 주입 테스트** — 각 단계에서 강제 종료 후 재기동하여 §3 표를 검증. → `tests/test_concurrency.sh` [B]:
+   "처리했지만 ack 전" 상태에서 `kill -9`, 새 리더의 회수와 재전달(중복 1건)까지 확인.
+7. **변이 테스트** — `tests/mutate.sh`가 방어 로직(`tests/mutations.txt`)을 하나씩 끈 코드로 테스트를 돌려, 그 방어를
+   검사하는 테스트가 있는지 본다. 스레드로 재현되지 않는 경합 틈은 `fq_internal.h`의 테스트 훅으로 결정적으로 만든다.
+   변이로 검사할 수 없는 것: fsync 순서(전원 차단), tmp 이름의 node_id(확률적 충돌), 쓰기 실패 시 임시 파일 삭제(디스크 풀).
