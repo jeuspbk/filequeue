@@ -61,9 +61,10 @@ GC 정지나 I/O 지연으로 멈췄던 옛 리더가 **리스 만료 후 깨어
 이를 막기 위해 단조 증가하는 `token`을 사용한다.
 
 - 모든 inflight 파일에는 점유한 리더의 token이 stamp된다(`__t<token>`).
-- 복구는 **현재 token보다 낮은** inflight만 회수 대상으로 삼는다.
-- 리더는 매 배치 전 `fq_renew_lease`로 자신이 여전히 리더인지 확인하고, 아니면(`FQ_ENOLEADER`)
-  즉시 소비를 중단한다.
+- 복구는 **현재 token보다 낮은** inflight를 회수한다(그 밖에 리더가 들고 있지 않은 내 token의 고아도 —
+  아래 [Stale inflight 복구](#stale-inflight-복구)).
+- 리더는 하트비트(`fq_renew_lease`, `fq_consume`은 리스/3마다)마다 `election.lock` 안에서 자신이 여전히 리더인지
+  확인하고, 아니면(`FQ_ENOLEADER`) 리더십을 내려놓는다(`fq_consume`은 `FQ_ELOCKED`를 돌려주는 대기 상태가 된다).
 - 리더는 **자기 리스 만료도 스스로 감지**한다(`fq_consume`). 마지막 성공 갱신 뒤 리스 길이가
   지났으면(GC 멈춤, 절전, 긴 메시지 처리) FS를 보지 않고도 리더십을 내려놓고 `election.lock`을 거쳐
   다시 얻는다. 다음 하트비트가 거절당할 때까지 옛 token으로 claim을 계속하는 창을 없애기 위함이다.
@@ -115,6 +116,8 @@ GC 정지나 I/O 지연으로 멈췄던 옛 리더가 **리스 만료 후 깨어
 | CLAIM 직후 | `inflight/`에 잔존 | 재처리 | OK (중복 가능) |
 | PROCESS 중 | `inflight/`에 잔존 | 재처리 | OK (중복 가능) |
 | ACK 직전 | `inflight/`에 잔존 | 재처리 → 중복 | OK (멱등 필요) |
+| 묶음(`fq_consume_batch`) 처리 중 | 묶음 전체가 `inflight/`에 잔존 | 묶음 전체 재처리 → 중복 최대 묶음 크기 | OK (멱등 필요) |
+| 배치 발행(`fq_publish_batch`) 중 | 앞쪽 일부만 `incoming/`, 나머지는 `tmp/` | 앞쪽만 발행됨, tmp는 GC가 정리 | OK (호출자가 재시도하면 앞쪽은 중복) |
 | ACK 후 | 파일 없음 | 완료 | OK |
 
 → **유실은 어느 경우에도 없다. 중복만 가능하다. 따라서 소비자 멱등성이 유일한 계약 조건이다.**

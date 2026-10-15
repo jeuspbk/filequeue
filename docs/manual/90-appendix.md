@@ -17,7 +17,7 @@ bash tests/test_concurrency.sh \
 # --- CLI 예제 ---
 ./build/fq_producer <큐루트> <개수> [접두사]
 ./build/fq_consumer <큐루트> <node_id> <로그파일> <실행시간ms>
-./build/fq_bench <큐루트> <개수> <레코드크기> [both|send|recv]
+./build/fq_bench <큐루트> <개수> <레코드크기> [both|send|recv] [batch]   # batch > 1: 배치 발행·묶음 소비
 
 # --- 매뉴얼 빌드 ---
 bash docs/build_manual.sh        # 또는

@@ -56,7 +56,7 @@ filequeue 전체를 관통하는 단 하나의 원칙이다.
 ### 식별자 규칙
 
 파일명과 `leader.info`(공백 구분 한 줄)에 그대로 들어가므로 `node_id`와 `stream_key`는 다음 규칙을
-지켜야 한다. 어기면 `fq_open` / `fq_publish` / `fq_adopt`가 `FQ_EINVAL`을 돌려준다.
+지켜야 한다. 어기면 `fq_open` / `fq_publish`(`_ex`·`_batch`) / `fq_adopt`(`_ex`)가 `FQ_EINVAL`을 돌려준다.
 
 | 항목 | 규칙 |
 |---|---|

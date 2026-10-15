@@ -42,11 +42,14 @@ ENOENT가 잠깐 보임, Cygwin/NTFS 실측)도 있는데, 라이브러리가 �
 1. **원자성** — 각 머신에서 한 번씩: `test_atomicity <공유경로>\atom-M1` / `...\atom-M2`. 모두 PASS.
 2. **선출 경합** — M1에서 먼저 `test_election <공유경로>\elect A 60000`, 몇 초 안에 M2에서
    `test_election <공유경로>\elect B 55000`. A가 먼저 리더여야 한다(B가 먼저 뜨면 A가 `acquire 실패`로
-   끝난다 → 새 디렉터리로 다시). 기대: A `lost=0`·`max_gap` < 1000ms, B `stolen=0`. 둘 다 종료코드 0.
+   끝난다 → 새 디렉터리로 다시). 기대: A `lost=0`·`err=0`·`max_gap` < 1000ms, B `stolen=0`. 둘 다 종료코드 0.
+   SMB에서는 B가 쉬지 않고 읽는 동안 교체가 자주 실패해 `err` > 0(A 종료코드 1)이 나올 수 있다 — 이때도
+   `lost=0`·`stolen=0`이면 리더십은 안전하다(`DESIGN.md` §0 SMB 실측).
 3. **failover** — M1에서 `fq_producer <공유경로>\fo 1000`. 이어서 M1과 M2에서 동시에
    `fq_consumer <공유경로>\fo M1 m1.log 60000` / `... M2 m2.log 60000`. 활성 쪽 프로세스를 강제 종료하면
    다른 쪽이 리스(기본 15초) 뒤 인수해야 한다. 끝난 뒤 두 로그를 합친 고유 줄 수 = 1000,
-   `inflight/`는 비어 있어야 한다(중복은 허용).
+   `inflight/`는 비어 있어야 한다(중복은 허용). 묶음 소비를 쓸 거라면 두 소비자에 `FQ_EXAMPLE_BATCH=20`을 주고
+   한 번 더 한다(중복은 죽은 쪽이 들고 있던 묶음 크기 이하).
 
 2와 3은 리더 쪽 머신을 바꿔 한 번 더 한다(캐시 지연은 방향에 따라 다를 수 있다).
 
@@ -106,3 +109,5 @@ MSVC로는 아직 빌드해 보지 않았다. 도입 전 대상 컴파일러로 
   둘 수 없을 만큼 길다(Win32) — 루트를 짧게 하라.
 - 순서 지정 인자(`mode`가 알 수 없는 값, BEFORE에 고르기 함수 없음, 거듭 끼워 이름이 220자 초과).
 - DLQ 함수에 경로 구분자·`.`·`..`가 든 이름, 또는 `fq_redrive`로 되돌려도 claim할 수 없는 긴 이름.
+- 배치·묶음 함수의 인자: `fq_publish_batch`의 `items`가 NULL(n > 0), `fq_consume_batch`·`fq_claim_batch`의
+  `out`·`got`이 NULL이거나 `max`가 0.

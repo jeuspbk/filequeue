@@ -43,12 +43,13 @@ ctest --test-dir build --output-on-failure
 bash tests/test_concurrency.sh ./build/fq_producer ./build/fq_consumer
 # [C] 구간은 ./build/test_election 을 자동으로 찾아 리더 선출 경합(split-brain)을 검사한다
 
-# 변이 테스트 (선택, 약 30분): 방어 로직을 하나씩 끈 코드로 위 테스트를 돌려 잡아내는지 확인
+# 변이 테스트 (선택, 약 45분): 방어 로직을 하나씩 끈 코드로 위 테스트를 돌려 잡아내는지 확인
 bash tests/mutate.sh      # 결과: build/mut/result.txt ("놓침" = 그 방어를 검사하는 테스트가 없음)
 ```
 
 > 동시성 테스트의 [B]는 활성 소비자가 메시지를 처리했지만 ack하기 전에 `kill -9`로 죽이고, 새 리더가 그
 > 메시지를 회수해 다시 전달하는지(중복 1건)까지 확인한다. "유실 없음"만 보면 회수가 고장 나도 통과하기 때문이다.
+> [D]는 같은 일을 묶음 소비(20건씩)로 해서, 죽은 쪽이 들고 있던 묶음만 재전달되는지(중복이 묶음 크기 이하) 본다.
 
 > 동시성 테스트는 `ctest`에 등록돼 있지 않다. 혼합 셸 환경(cygwin `ctest` ↔ git-bash)에서
 > 경로 표기(`/cygdrive/d` vs `/d`)가 달라 자동 실행이 불안정하기 때문이며, 스크립트 자체는
@@ -76,4 +77,4 @@ cc myapp.c -I/path/to/filequeue/include -L/path/to/filequeue/build -lfilequeue -
 ```
 
 CMake 프로젝트라면 `filequeue` 타깃에 링크하면 인클루드 경로가 자동 전파된다. 라이브러리는 `fq_publish_batch`의
-병렬 기록에 스레드를 쓰므로 POSIX에서는 `-pthread`가 필요하다(CMake 타깃은 `Threads::Threads`를 함께 전파한다).
+병렬 기록과 `fq_consume_batch`·`fq_ack_batch`의 병렬 읽기·삭제에 스레드를 쓰므로 POSIX에서는 `-pthread`가 필요하다(CMake 타깃은 `Threads::Threads`를 함께 전파한다).

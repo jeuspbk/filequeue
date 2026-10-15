@@ -15,13 +15,13 @@ API의 **정본은 `include/fq.h`의 선언과 주석**이다. 이 절은 표 �
 | `FQ_EEMPTY` | -4 | 큐가 비어 있음 |
 | `FQ_ELOCKED` | -5 | 락/리더십을 다른 쪽이 보유 |
 | `FQ_ENOLEADER` | -6 | 리더십을 잃음 (fencing) |
-| `FQ_EINVAL` | -7 | 잘못된 인자: `node_id` / `stream_key` 형식([식별자 규칙](#식별자-규칙)), 이름·경로 길이 한도(claim 접미사까지 파일명 255자, 네이티브 Win32는 전체 경로 260자), 순서 지정 인자, DLQ 항목 이름 |
-| `FQ_ENOSPC` | -8 | 공간 부족 (`fq_publish`). 재시도보다 운영자 조치(정리·증설)가 필요할 수 있다 |
+| `FQ_EINVAL` | -7 | 잘못된 인자: `node_id` / `stream_key` 형식([식별자 규칙](#식별자-규칙)), 이름·경로 길이 한도(claim 접미사까지 파일명 255자, 네이티브 Win32는 전체 경로 260자), 순서 지정 인자, DLQ 항목 이름, 묶음 인자(`items`·`out`·`got`이 NULL, `max` 0) |
+| `FQ_ENOSPC` | -8 | 공간 부족 (`fq_publish`·`fq_publish_batch`). 재시도보다 운영자 조치(정리·증설)가 필요할 수 있다 |
 
 > `FQ_ERR`는 일시적일 수 있다(fsync 실패, NFS 정지 등). 소비/대기 루프는 `FQ_ERR`에 종료하지 말고
 > 잠시 쉬었다가 다시 호출한다. 쓰기에 실패한 임시 파일은 라이브러리가 그 자리에서 지운다.
 
-> `fq_claim` 도중 다른 소비자에게 메시지를 빼앗기면 내부적으로 `FQ_ENOENT`/`FQ_EEXIST`로
+> `fq_claim` 도중 다른 소비자에게 메시지를 빼앗기면 내부적으로 `FQ_ENOENT`로
 > 표현되지만, 이는 정상 흐름이라 라이브러리가 다음 후보로 넘어간다. 호출자에게는 `FQ_OK`(획득),
 > `FQ_EEMPTY`(없음), 또는 진짜 I/O 오류인 `FQ_ERR`만 보인다.
 
@@ -60,8 +60,8 @@ typedef struct {
 } fq_msg;
 ```
 
-`data`는 라이브러리가 소유한다. `fq_ack` / `fq_nack` 호출 시 자동 해제되며, 직접 폐기할 때는
-`fq_msg_free`를 쓴다.
+`data`는 라이브러리가 소유한다. `fq_ack` / `fq_nack` / `fq_ack_batch` / 성공한 `fq_take`·`fq_release`에서 자동
+해제되며, 직접 폐기할 때는 `fq_msg_free`를 쓴다.
 
 ## 생애주기 함수
 
@@ -247,5 +247,5 @@ POSIX(Cygwin 등)에서는 존재 검사와 rename이 분리되어 있으므로 
 |---|---|---|
 | `fq_gc` | `int fq_gc(fq_queue *q, uint64_t tmp_max_age_ms)` | mtime이 `tmp_max_age_ms`보다 오래된 크래시 잔재 정리: `tmp/`의 모든 파일(발행 중 크래시), `control/`의 `.now-*`(FS 시각 측정), `leader-*.tmp`(leader.info 교체 중), `election.lock.stale-*`. 반환: 삭제 개수(≥0), 오류 시 음수. |
 
-> `tmp_max_age_ms`는 정상 발행·하트비트 한 번보다 충분히 길게(예: 수 분) 준다. 진행 중인 임시
+> `tmp_max_age_ms`는 정상 발행(배치는 청크 하나)·하트비트 한 번보다 충분히 길게(예: 수 분) 준다. 진행 중인 임시
 > 파일을 지우면 그 발행이나 하트비트가 실패한다.
