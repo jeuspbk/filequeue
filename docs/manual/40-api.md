@@ -33,6 +33,8 @@ API의 **정본은 `include/fq.h`의 선언과 주석**이다. 이 절은 표 �
 | `FQ_LEASE_MS` | 15000 | 리스 유효시간(ms) |
 | `FQ_HEARTBEAT_MS` | 3000 | 저수준 API(`fq_renew_lease`)를 쓸 때 권장 갱신 주기(ms). 리스의 1/3~1/5. `fq_consume`은 이 값을 쓰지 않고 리스/3(기본 5000ms)으로 갱신한다 |
 | `FQ_ELECTION_STALE_MS` | 30000 | `election.lock` 강제 회수 임계의 상한(ms). 실제 임계 = min(이 값, 리스/3) |
+| `FQ_BATCH_CHUNK` | 256 | 배치 발행이 한 번에 기록·rename하는 건수, 묶음 소비가 한 번에 주는 최대 건수 |
+| `FQ_BATCH_THREADS` | 8 | 배치 발행·묶음 소비가 겹치는 내부 스레드 수(최대 16) |
 
 ## 데이터 구조
 

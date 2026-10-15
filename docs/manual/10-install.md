@@ -32,7 +32,7 @@ cmake --build build                        # 빌드
 ## 테스트 실행
 
 ```bash
-# C 단위 테스트 (원자성, 기본 라운드트립/failover, consume·하트비트, 2단계 발행, FS 시각, 순서 지정, DLQ)
+# C 단위 테스트 (원자성, 기본 라운드트립/failover, consume·하트비트, 2단계 발행, FS 시각, 순서 지정, DLQ, 배치 발행·묶음 소비)
 ctest --test-dir build --output-on-failure
 
 # 단일 테스트 직접 실행
