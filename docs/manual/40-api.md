@@ -154,6 +154,30 @@ typedef struct {
 > 노드가 리더십을 빼앗아갈 수 있고, 회수를 인수 때만 하면 리스 만료를 모르는 좀비가 그 뒤에 옛
 > token으로 claim한 파일이 다음 failover까지 `inflight/`에 멈춰 있다.
 
+### 묶음 소비
+
+| 함수 | 시그니처 | 설명 |
+|---|---|---|
+| `fq_consume_batch` | `int fq_consume_batch(fq_queue *q, fq_msg **out, size_t max, size_t *got)` | `fq_consume`과 같되 최대 `max`건(한 번에 `FQ_BATCH_CHUNK` = 256건까지)을 `out[0..*got)`에 오래된 순으로 준다. 반환은 `fq_consume`과 같고 `FQ_OK`면 `*got >= 1`. `out`·`got`이 NULL이거나 `max`가 0이면 `FQ_EINVAL`. |
+| `fq_claim_batch` | `int fq_claim_batch(fq_queue *q, const fq_lease *lease, fq_msg **out, size_t max, size_t *got)` | 저수준판(리더십을 직접 관리할 때). |
+| `fq_ack_batch` | `int fq_ack_batch(fq_queue *q, fq_msg **msgs, size_t n)` | n건 ack. 모든 `m`은 해제된다. 반환은 항목 순서상 첫 오류(`FQ_ENOENT` = 그 메시지가 이미 회수됨 → 다시 전달될 수 있음. 나머지는 지워졌다). |
+
+```c
+fq_msg *ms[64];
+size_t got;
+while (fq_consume_batch(q, ms, 64, &got) == FQ_OK) {
+    for (size_t i = 0; i < got; i++) handle(ms[i]->data, ms[i]->len);   /* 길면 도중에 fq_heartbeat(q) */
+    fq_ack_batch(q, ms, got);         /* 실패한 것만 따로 처리하려면 그 건은 fq_nack, 나머지만 fq_ack_batch */
+}
+```
+
+claim rename은 차례로 하고, 파일 읽기와 ack의 unlink만 내부 스레드(최대 `FQ_BATCH_THREADS`)로 겹친다. 상태 전이·
+읽기 실패 처리(시도로 쳐서 건너뜀)·경합 패배·들고 있는 메시지 추적은 `fq_consume`/`fq_ack`과 같다. 묶음 전체의
+처리 시간이 리스보다 길 수 있으면 도중에 `fq_heartbeat(q)`를 부를 것.
+
+이득은 저장소에 따라 갈린다(1 KB, 100건씩, `BENCHMARK.md`): NTFS(Cygwin·네이티브 Win32)는 약 1.9배, Linux ext4는
+수신 연산이 이미 건당 수십 µs라 이득이 없고 스레드 비용으로 5~10% 느리다 — Linux에서는 `fq_consume`을 쓸 것.
+
 ### 골라서 소비
 
 | 함수 | 시그니처 | 설명 |

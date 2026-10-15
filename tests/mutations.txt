@@ -13,7 +13,7 @@ M10 leader.info ENOENT 재시도 제거#src/fq_util.c#for (int i = 0; rc == FQ_E
 M11 DLQ 한도 무시(dead로 안 감)#src/fq_queue.c#int dead = attempt >= FQ_MAX_ATTEMPTS - 1;#int dead = 0;
 M12 claim 긴 이름 격리 대신 오류#src/fq_queue.c#if (quarantine_incoming(q, name) != FQ_OK) return FQ_ERR;#return FQ_ERR;
 M13 DLQ 이름 검증 제거#src/fq_queue.c#if (!valid_entry_name(name)) return FQ_EINVAL;#if (!name) return FQ_EINVAL;
-M14 claim 뒤 읽기 실패를 시도로 안 침#src/fq_queue.c#if (fq_requeue_inflight(q, inf_name, NULL) != FQ_OK) {#if (1) {
+M14 claim 뒤 읽기 실패를 시도로 안 침#src/fq_queue.c#if (fq_requeue_inflight(q, c->inf_name, NULL) != FQ_OK) {#if (1) {
 M15 stale 락 회수 안 함#src/fq_leader.c#now > lock_mtime + fq_election_stale_ms() &&#0 &&
 M16 긴 루트 검사 제거(Win32 전용: POSIX에선 놓침이 정상, 네이티브 test_consume [10]이 잡음)#src/fq_queue.c#if (!fq_fs_path_fits(probe, 1 + 65 + strlen(q->node_id) + (255 - FQ_MSG_NAME_MAX))) {#if (0) {
 N01 HEAD 발행이 claim 캐시를 무효화 안 함#src/fq_queue.c#claim_cache_clear(q);                            /* 이 핸들의 캐시가 새 맨 앞을 놓치지 않게 */#;
@@ -40,3 +40,6 @@ B05 배치: 이름 길이 사전 검사 생략(뒤 청크에서 걸려 앞 청�
 B06 배치: 청크로 나누지 않음#src/fq_queue.c#size_t cap = n < FQ_BATCH_CHUNK ? n : FQ_BATCH_CHUNK;#size_t cap = n;
 B07 배치: rename 실패 시 남은 tmp를 안 지움#src/fq_queue.c#for (size_t i = k; i < m; i++) fq_fs_unlink(e[i].tmp);#;
 B08 스레드를 못 만들면 그 몫을 아무도 안 함#src/fq_util.c#if (!started[k]) { fn(arg, k); continue; }#if (!started[k]) continue;
+R01 묶음 claim: 모두 건너뛴 뒤 "비었음"이면 끝냄(되돌린 항목을 다시 안 봄)#src/fq_queue.c#if (ferr) { rc = FQ_ERR; break; }#if (ferr || nrc != FQ_OK) { rc = ferr ? FQ_ERR : nrc; break; }
+R02 묶음 ack: unlink 오류를 알리지 않음#src/fq_queue.c#if (rcs[i] != FQ_OK && rc == FQ_OK) rc = rcs[i];#;
+R03 묶음 claim: 한 번에 FQ_BATCH_CHUNK 상한 없음#src/fq_queue.c#size_t cap = max < FQ_BATCH_CHUNK ? max : FQ_BATCH_CHUNK;#size_t cap = max;

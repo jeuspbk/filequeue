@@ -120,6 +120,14 @@ int fq_consume(fq_queue *q, fq_msg **out)
     return fq_claim(q, &q->lead_lease, out);
 }
 
+int fq_consume_batch(fq_queue *q, fq_msg **out, size_t max, size_t *got)
+{
+    if (got) *got = 0;
+    int rc = lead(q);
+    if (rc != FQ_OK) return rc;
+    return fq_claim_batch(q, &q->lead_lease, out, max, got);
+}
+
 int fq_consume_if(fq_queue *q, fq_want_fn want, void *ud, fq_msg **out)
 {
     int rc = lead(q);

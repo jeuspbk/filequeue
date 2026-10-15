@@ -317,7 +317,12 @@ ack 없이 해제한 메시지). 핸들은 claim해서 아직 들고 있는 메�
   나이 기준을 넘어 다른 노드가 발행 전 tmp를 지울 수 있었고, 메모리도 n에 비례했다. 이름의 시각은 기록 전에 정해지므로
   청크 하나의 기록 시간만큼 실제로 보이는 시각보다 앞선다 — 그 사이 다른 생산자가 낸 메시지보다 앞에 정렬될 수 있다
   (best-effort FIFO 범위 안. 단일 발행도 기록 한 번만큼 같은 틈이 있다).
-  라이브러리가 스레드를 쓰는 곳은 여기뿐이다(`fq_run_parallel`, `fq_util.c`). 핸들 `q`는 호출 스레드만 만진다.
+  라이브러리가 스레드를 쓰는 곳은 배치 발행과 묶음 소비뿐이다(`fq_run_parallel`, `fq_util.c`). 핸들 `q`는 호출 스레드만 만진다.
+- **묶음 소비 (`fq_consume_batch` / `fq_ack_batch`):** claim rename은 차례로, 읽기와 ack unlink만 스레드로 겹친다.
+  NTFS에서 같은 디렉터리 쌍의 rename을 8개 스레드로 겹치면 오히려 건당 0.9 → 7.5 ms로 느려졌다(읽기 1.1 → 0.2,
+  unlink 0.2 → 0.08 ms). 상태 전이는 그대로 건마다 rename 한 번 / unlink 한 번이고, 읽기 실패·경합 패배·
+  들고 있는 메시지 추적은 `fq_claim`과 같은 코드(`claim_next`/`claim_finish`)를 탄다. 한 번에 `FQ_BATCH_CHUNK`건까지.
+  이득은 NTFS에서 약 1.9배, Linux ext4에서는 수신 연산이 건당 수십 µs라 스레드 비용이 커서 5~10% 손해다.
 - **2단계 발행/꺼내기 (`fq_adopt` / `fq_take`):** 트랜잭션 관리자(예: mica의 /Q 자원 관리자)가 메시지를 큐 밖
   (같은 파일시스템)의 파일에 보관했다가 결정에 따라 옮긴다. `fq_adopt` = 영속된 파일을 `incoming/`으로 rename
   (새 이름, 발행 시각 = 지금), `fq_take` = claim한 메시지를 `inflight/`에서 호출자의 파일로 rename(ack 대신).
@@ -351,6 +356,8 @@ int  fq_heartbeat(fq_queue *q);               /* 긴 처리 중 리스 연장 */
 int  fq_takeover(fq_queue *q);                /* 같은 node_id의 죽은 핸들 리스를 즉시 인수 */
 int  fq_ack(fq_queue *q, fq_msg *m);          /* inflight unlink. FQ_ENOENT = 이미 회수됨(재전달 예정) */
 int  fq_nack(fq_queue *q, fq_msg *m);         /* 즉시 requeue (attempt+1, 한도면 dead/) */
+int  fq_consume_batch(fq_queue *q, fq_msg **out, size_t max, size_t *got);  /* 읽기를 스레드로 겹침 */
+int  fq_ack_batch(fq_queue *q, fq_msg **msgs, size_t n);                    /* unlink를 스레드로 겹침 */
 
 /* Consumer: 저수준 (직접 리더십 관리) */
 int  fq_acquire_leadership(fq_queue *q, fq_lease *lease);

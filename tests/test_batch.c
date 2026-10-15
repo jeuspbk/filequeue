@@ -1,5 +1,6 @@
 /* test_batch.c - fq_publish_batch: 순서, 검증 실패 시 아무것도 안 씀, 기록 실패 시 큐 그대로, 잔재 없음,
- *                청크 경계(오류면 앞쪽 *published건만), rename 실패, 스레드 없이 */
+ *                청크 경계(오류면 앞쪽 *published건만), rename 실패, 스레드 없이
+ *                fq_consume_batch / fq_ack_batch: 순서, 상한, 읽기 실패 건너뜀, 들고 있는 것 보호, ack 오류 */
 #include "fq.h"
 #include "fq_fs.h"
 #include "fq_internal.h"   /* fq_path */
@@ -7,6 +8,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if defined(_WIN32) && !defined(__CYGWIN__)
+#  include <direct.h>
+#  define rmdir _rmdir
+#else
+#  include <unistd.h>
+#endif
 
 static int fails = 0;
 #define CHECK(cond, msg) do { \
@@ -244,6 +251,138 @@ int main(int argc, char **argv)
         }
         CHECK(ok && i == N, "  ... 순서대로 50건");
         CHECK(count_dir(q, FQ_DIR_TMP) == 0, "  ... tmp/에 잔재 없음");
+    }
+
+    printf("[10] fq_consume_batch / fq_ack_batch: 순서, max씩, 들고 있는 것은 하트비트가 회수 안 함\n");
+    {
+        enum { N = 30 };
+        static char pay[N][12];
+        static fq_item it[N];
+        for (int i = 0; i < N; i++) {
+            snprintf(pay[i], sizeof(pay[i]), "c%02d", i);
+            it[i].data = pay[i];
+            it[i].len = 3;
+            it[i].stream_key = NULL;
+        }
+        size_t pub = 0;
+        CHECK(fq_publish_batch(q, it, N, &pub) == FQ_OK && pub == N, "30건 발행");
+        fq_msg *out[8];
+        size_t got = 99, total = 0;
+        int ok = 1, sizes_ok = 1, ack_ok = 1, rc;
+        while ((rc = fq_consume_batch(q, out, 8, &got)) == FQ_OK) {
+            if (got != (total + 8 <= N ? 8u : (size_t)(N - total))) sizes_ok = 0;
+            for (size_t j = 0; j < got; j++) {
+                char want[12];
+                snprintf(want, sizeof(want), "c%02d", (int)(total + j));
+                if (out[j]->len != 3 || memcmp(out[j]->data, want, 3) != 0) ok = 0;
+            }
+            if (total == 0) {
+                /* 들고 있는 동안 하트비트(→ fq_recover_stale)가 돌아도 다시 나오지 않아야 한다 */
+                q->lead_next_renew_ms = 0;
+                fq_msg *more[8];
+                size_t g2 = 0;
+                CHECK(fq_consume_batch(q, more, 8, &g2) == FQ_OK && g2 == 8, "  하트비트 뒤 다음 8건");
+                int dup = 0;
+                for (size_t j = 0; j < g2; j++) {
+                    char want[12];
+                    snprintf(want, sizeof(want), "c%02d", (int)(8 + j));
+                    if (more[j]->len != 3 || memcmp(more[j]->data, want, 3) != 0) dup = 1;
+                }
+                CHECK(!dup, "  ... 들고 있는 첫 8건은 회수·재전달되지 않음");
+                CHECK(fq_ack_batch(q, more, g2) == FQ_OK, "  ... 그 8건 fq_ack_batch");
+                total += g2;
+            }
+            if (fq_ack_batch(q, out, got) != FQ_OK) ack_ok = 0;
+            total += got;
+        }
+        CHECK(ack_ok, "fq_ack_batch 모두 FQ_OK");
+        CHECK(rc == FQ_EEMPTY && got == 0, "끝나면 FQ_EEMPTY, *got = 0");
+        CHECK(ok && sizes_ok && total == N, "  ... 30건 순서대로, 8건씩(마지막은 나머지)");
+        CHECK(count_dir(q, FQ_DIR_INFLIGHT) == 0, "  ... inflight/ 비어 있음 (모두 ack)");
+        CHECK(fq_consume_batch(q, NULL, 8, &got) == FQ_EINVAL && fq_consume_batch(q, out, 0, &got) == FQ_EINVAL &&
+              fq_consume_batch(q, out, 8, NULL) == FQ_EINVAL, "out NULL·max 0·got NULL: FQ_EINVAL");
+        CHECK(fq_ack_batch(q, out, 0) == FQ_OK, "fq_ack_batch 0건: FQ_OK");
+    }
+
+    printf("[11] 한 번에 FQ_BATCH_CHUNK건까지\n");
+    {
+        enum { N = FQ_BATCH_CHUNK + 5 };
+        static fq_item it[N];
+        static fq_msg *out[N + 100];
+        for (int i = 0; i < N; i++) { it[i].data = "w"; it[i].len = 1; it[i].stream_key = NULL; }
+        size_t pub = 0, got = 0;
+        CHECK(fq_publish_batch(q, it, N, &pub) == FQ_OK && pub == N, "CHUNK+5건 발행");
+        CHECK(fq_consume_batch(q, out, N + 100, &got) == FQ_OK && got == FQ_BATCH_CHUNK, "max가 커도 CHUNK건");
+        CHECK(fq_ack_batch(q, out, got) == FQ_OK, "  ... ack");
+        CHECK(fq_consume_batch(q, out, N + 100, &got) == FQ_OK && got == 5, "  ... 나머지 5건");
+        CHECK(fq_ack_batch(q, out, got) == FQ_OK, "  ... ack");
+    }
+
+    printf("[12] 읽을 수 없는 항목은 시도로 쳐서 건너뛰고(결국 dead/) 나머지를 준다\n");
+    {
+        char bad[1408], dead_bad[1408];
+        const char *bn = "0000000000000001-0000000001-x-bad.msg";      /* 가장 오래된 이름: 묶음의 맨 앞 */
+        fq_path(bad, sizeof(bad), q->root, FQ_DIR_INCOMING, bn);
+        fq_fs_mkdirs(bad);
+        fq_item it[4] = { { "g1", 2, NULL }, { "g2", 2, NULL }, { "g3", 2, NULL }, { "g4", 2, NULL } };
+        size_t pub = 0;
+        CHECK(fq_publish_batch(q, it, 4, &pub) == FQ_OK && pub == 4, "4건 발행 + incoming에 디렉터리");
+        fq_msg *out[8];
+        size_t got = 0;
+        CHECK(fq_consume_batch(q, out, 8, &got) == FQ_OK && got == 4, "정상 4건만 받음");
+        int ok = got == 4;
+        for (size_t j = 0; ok && j < got; j++)
+            if (out[j]->len != 2 || out[j]->data == NULL || ((char *)out[j]->data)[1] != (char)('1' + j)) ok = 0;
+        CHECK(ok, "  ... 순서대로 g1~g4 (빈 메시지 없음)");
+        fq_ack_batch(q, out, got);
+        int rc = fq_consume_batch(q, out, 8, &got);
+        CHECK(rc == FQ_EEMPTY && got == 0, "다음 호출: 디렉터리는 시도가 쌓여 dead/로 가고 FQ_EEMPTY");
+        snprintf(dead_bad, sizeof(dead_bad), "%s/%s/%s.a%d", q->root, FQ_DIR_DEAD, bn, FQ_MAX_ATTEMPTS - 1);
+        CHECK(fq_fs_exists(dead_bad) == 1, "  ... dead/에 격리");
+        rmdir(dead_bad);
+    }
+
+    printf("[13] fq_ack_batch: 이미 회수된 것이 있으면 FQ_ENOENT, 나머지는 지움\n");
+    {
+        fq_item it[4] = { { "h1", 2, NULL }, { "h2", 2, NULL }, { "h3", 2, NULL }, { "h4", 2, NULL } };
+        size_t pub = 0, got = 0;
+        CHECK(fq_publish_batch(q, it, 4, &pub) == FQ_OK && pub == 4, "4건 발행");
+        fq_msg *out[8];
+        CHECK(fq_consume_batch(q, out, 8, &got) == FQ_OK && got == 4, "4건 받음");
+        char p[1408];
+        fq_path(p, sizeof(p), q->root, FQ_DIR_INFLIGHT, out[2]->name);
+        CHECK(fq_fs_unlink(p) == FQ_OK, "셋째의 inflight를 치움(회수당한 것처럼)");
+        CHECK(fq_ack_batch(q, out, got) == FQ_ENOENT, "fq_ack_batch: FQ_ENOENT");
+        CHECK(count_dir(q, FQ_DIR_INFLIGHT) == 0, "  ... 나머지 셋은 지워짐");
+        CHECK(fq_consume_batch(q, out, 8, &got) == FQ_EEMPTY, "  ... 다시 나오는 것 없음");
+    }
+
+    printf("[14] 스레드를 만들 수 없어도 묶음 소비·ack\n");
+    {
+        enum { N = 20 };
+        static char pay[N][12];
+        static fq_item it[N];
+        for (int i = 0; i < N; i++) {
+            snprintf(pay[i], sizeof(pay[i]), "t%02d", i);
+            it[i].data = pay[i];
+            it[i].len = 3;
+            it[i].stream_key = NULL;
+        }
+        size_t pub = 0, got = 0;
+        CHECK(fq_publish_batch(q, it, N, &pub) == FQ_OK && pub == N, "20건 발행");
+        fq_test_par_nothreads = 1;
+        fq_msg *out[N];
+        int rc = fq_consume_batch(q, out, N, &got);
+        int ok = rc == FQ_OK && got == N;
+        for (size_t j = 0; ok && j < got; j++) {
+            char want[12];
+            snprintf(want, sizeof(want), "t%02d", (int)j);
+            if (out[j]->len != 3 || memcmp(out[j]->data, want, 3) != 0) ok = 0;
+        }
+        CHECK(ok, "20건 순서대로 (읽기를 호출 스레드가)");
+        CHECK(rc == FQ_OK && fq_ack_batch(q, out, got) == FQ_OK, "  ... fq_ack_batch");
+        fq_test_par_nothreads = 0;
+        CHECK(count_dir(q, FQ_DIR_INFLIGHT) == 0 && count_dir(q, FQ_DIR_INCOMING) == 0, "  ... 큐 비어 있음");
     }
 
     fq_close(q);

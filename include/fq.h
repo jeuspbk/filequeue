@@ -127,6 +127,18 @@ int  fq_nack(fq_queue *q, fq_msg *m);
  *   회수되어 다시 전달된다. ack·nack이 실패한 경우도 같다 — 어느 쪽이든 리더가 바뀔 때까지 멈추지 않는다. */
 void fq_msg_free(fq_msg *m);
 
+/* ---- 묶음 소비 ----
+ * fq_claim_batch: fq_claim을 최대 max건(한 번에 FQ_BATCH_CHUNK건까지) 한 것과 같다 — out[0..*got)에 오래된 순.
+ *   claim rename은 차례로 하고(겹치면 NTFS에서 더 느리다), 읽기만 내부 스레드로 겹친다. 읽기 실패·경합 패배는
+ *   fq_claim과 같이 건너뛴다. FQ_OK면 *got >= 1, FQ_EEMPTY, FQ_ERR(*got = 0), out·got NULL이나 max 0은 FQ_EINVAL.
+ *   받은 메시지마다 fq_ack / fq_nack / fq_ack_batch 할 것. 모두 처리하는 시간이 리스보다 길 수 있으면 도중에
+ *   fq_heartbeat를 부를 것(fq_consume_batch).
+ * fq_ack_batch: n건을 ack(unlink를 내부 스레드로 겹침). 모든 m은 해제된다. 반환은 항목 순서상 첫 오류
+ *   (FQ_ENOENT = 그 메시지가 이미 회수됨 → 다시 전달될 수 있음. 나머지는 그대로 지워졌다).
+ * 이득은 NTFS에서 크고(읽기·unlink가 겹침), Linux ext4처럼 수신 연산이 이미 빠른 곳에서는 거의 없다(BENCHMARK.md). */
+int  fq_claim_batch(fq_queue *q, const fq_lease *lease, fq_msg **out, size_t max, size_t *got);
+int  fq_ack_batch(fq_queue *q, fq_msg **msgs, size_t n);
+
 /* ---- 골라서 소비 ----
  * fq_claim_if: incoming을 오래된 순으로 보며 want(data, len, ud)가 1을 돌려주는 첫 메시지를
  *              claim한다(0이면 건너뜀). 후보마다 파일을 읽으므로 fq_claim보다 비싸다.
@@ -148,6 +160,9 @@ int  fq_release(fq_queue *q, fq_msg *m);   /* 실패하면 m은 남는다: 처�
  *                FQ_ERR 대신 claim을 계속하고(리스가 유효한 동안) 갱신은 잠시 뒤 다시 시도한다.
  * 노드 식별자는 fq_open에서 설정한 q->node_id를 사용한다. */
 int  fq_consume(fq_queue *q, fq_msg **out);
+/* fq_consume과 같되 fq_claim_batch로 최대 max건을 받는다(위 "묶음 소비"). 반환은 fq_consume과 같고
+ * FQ_OK면 *got >= 1. */
+int  fq_consume_batch(fq_queue *q, fq_msg **out, size_t max, size_t *got);
 /* fq_consume과 같되 fq_claim_if로 고른다. */
 int  fq_consume_if(fq_queue *q, fq_want_fn want, void *ud, fq_msg **out);
 /* fq_takeover: 같은 node_id로 연 이전 핸들이 죽었음을 호출자가 보증할 때, 그 리스를 만료(FQ_LEASE_MS)를

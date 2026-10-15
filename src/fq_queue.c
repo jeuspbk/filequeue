@@ -468,7 +468,18 @@ static int quarantine_incoming(fq_queue *q, const char *name)
     return FQ_OK;
 }
 
-int fq_claim(fq_queue *q, const fq_lease *lease, fq_msg **out)
+/* claim 한 건: 읽기 전(claim_next)과 읽은 뒤(claim_finish)로 나눠 fq_claim과 fq_claim_batch가 같이 쓴다 */
+typedef struct {
+    char     inf_name[640];
+    char     src[1408], dst[1408];   /* incoming/ 원래 경로, inflight/ 경로 */
+    uint32_t attempt;
+    void    *data;                   /* 읽기 결과 */
+    size_t   len;
+    int      rrc;
+} claim_ent;
+
+/* 다음 후보를 incoming/ → inflight/로 옮긴다. FQ_OK면 c에 이름·경로, FQ_EEMPTY, FQ_ERR. */
+static int claim_next(fq_queue *q, const fq_lease *lease, claim_ent *c)
 {
     for (;;) {
         /* 캐시 소진 시 재나열. 새로 채울 게 없으면 큐가 비었다는 뜻. */
@@ -482,50 +493,158 @@ int fq_claim(fq_queue *q, const fq_lease *lease, fq_msg **out)
             const char *name = q->claim_cache[q->claim_idx++];
 
             char base[512];
-            uint32_t attempt = 0;
-            fq_parse_attempt(name, base, sizeof(base), &attempt);
+            c->attempt = 0;
+            fq_parse_attempt(name, base, sizeof(base), &c->attempt);
 
             /* CLAIM: incoming/<name> -> inflight/<name>__t<token> (원자적 rename).
              * 같은 src를 두 쪽이 rename하면 한 쪽만 성공 → 경합 패배는 ENOENT. */
-            char inf_name[640];
-            snprintf(inf_name, sizeof(inf_name), "%s__t%llu",
+            snprintf(c->inf_name, sizeof(c->inf_name), "%s__t%llu",
                      name, (unsigned long long)lease->token);
+            fq_path(c->src, sizeof(c->src), q->root, FQ_DIR_INCOMING, name);
+            fq_path(c->dst, sizeof(c->dst), q->root, FQ_DIR_INFLIGHT, c->inf_name);
 
-            char src[1408], dst[1408];
-            fq_path(src, sizeof(src), q->root, FQ_DIR_INCOMING, name);
-            fq_path(dst, sizeof(dst), q->root, FQ_DIR_INFLIGHT, inf_name);
-
-            int rc = fq_fs_rename(src, dst);
+            int rc = fq_fs_rename(c->src, c->dst);
             if (rc == FQ_ENOENT) continue;                    /* 경합 패배/이미 처리됨 */
             if (rc == FQ_EINVAL) {                            /* 접미사를 붙일 수 없는 이름 */
                 if (quarantine_incoming(q, name) != FQ_OK) return FQ_ERR;
                 continue;
             }
             if (rc != FQ_OK) return FQ_ERR;
-
-            /* 읽기 실패(EACCES·EIO, 일반 파일이 아닌 항목)는 이 메시지의 실패한 시도 한 번으로 친다.
-             * 원래 이름으로 되돌리면 attempt가 늘지 않아 영원히 DLQ로 가지 않고, 이름이 가장 오래되어
-             * 캐시를 채울 때마다 맨 앞에서 FQ_ERR를 낸다. attempt+1로 보내면 일시 오류는 재시도되고
-             * 계속 실패하면 dead/로 격리된다. 큐는 다음 후보로 계속 흐른다. */
-            void *data = NULL; size_t len = 0;
-            int rrc = fq_fs_read_file(dst, &data, &len);
-            if (rrc == FQ_ENOENT) continue;   /* claim 직후 더 새 리더가 회수함(내가 좀비): 경합 패배와 같다 */
-            if (rrc != FQ_OK) {
-                if (fq_requeue_inflight(q, inf_name, NULL) != FQ_OK) {
-                    fq_fs_rename(dst, src);   /* 그것도 안 되면 원래 자리로(내 token의 고아 방지) */
-                    return FQ_ERR;
-                }
-                continue;
-            }
-
-            /* 할당 실패는 메시지 탓이 아니므로 그대로 되돌린다(내 token의 고아 방지). */
-            fq_msg *m = new_msg(q, inf_name, data, len, attempt);
-            if (!m) { free(data); fq_fs_rename(dst, src); return FQ_ERR; }
-            *out = m;
             return FQ_OK;
         }
-        /* 이 배치를 다 소진 → 루프 상단에서 재나열 시도 */
+        /* 캐시를 다 소진 → 루프 상단에서 재나열 시도 */
     }
+}
+
+/* 읽은 결과(c->rrc, c->data)로 claim을 마무리한다. data의 소유권을 넘겨받는다.
+ * FQ_OK면 *out, FQ_ENOENT면 이 건은 건너뜀(다음 후보로), FQ_ERR면 원래 자리로 되돌리고 오류. */
+static int claim_finish(fq_queue *q, claim_ent *c, fq_msg **out)
+{
+    /* claim 직후 더 새 리더가 회수함(내가 좀비): 경합 패배와 같다 */
+    if (c->rrc == FQ_ENOENT) return FQ_ENOENT;
+
+    /* 읽기 실패(EACCES·EIO, 일반 파일이 아닌 항목)는 이 메시지의 실패한 시도 한 번으로 친다.
+     * 원래 이름으로 되돌리면 attempt가 늘지 않아 영원히 DLQ로 가지 않고, 이름이 가장 오래되어
+     * 캐시를 채울 때마다 맨 앞에서 FQ_ERR를 낸다. attempt+1로 보내면 일시 오류는 재시도되고
+     * 계속 실패하면 dead/로 격리된다. 큐는 다음 후보로 계속 흐른다. */
+    if (c->rrc != FQ_OK) {
+        if (fq_requeue_inflight(q, c->inf_name, NULL) != FQ_OK) {
+            fq_fs_rename(c->dst, c->src);   /* 그것도 안 되면 원래 자리로(내 token의 고아 방지) */
+            return FQ_ERR;
+        }
+        return FQ_ENOENT;
+    }
+
+    /* 할당 실패는 메시지 탓이 아니므로 그대로 되돌린다(내 token의 고아 방지). */
+    fq_msg *m = new_msg(q, c->inf_name, c->data, c->len, c->attempt);
+    if (!m) { free(c->data); fq_fs_rename(c->dst, c->src); return FQ_ERR; }
+    *out = m;
+    return FQ_OK;
+}
+
+int fq_claim(fq_queue *q, const fq_lease *lease, fq_msg **out)
+{
+    claim_ent c;
+    for (;;) {
+        int rc = claim_next(q, lease, &c);
+        if (rc != FQ_OK) return rc;
+        c.data = NULL;
+        c.len = 0;
+        c.rrc = fq_fs_read_file(c.dst, &c.data, &c.len);
+        rc = claim_finish(q, &c, out);
+        if (rc != FQ_ENOENT) return rc;
+    }
+}
+
+/* ---- 묶음 claim / ack (fq.h) ---- */
+
+typedef struct { claim_ent *c; size_t n, step; } claim_job;
+
+static void claim_read(void *arg, size_t k)
+{
+    claim_job *j = (claim_job *)arg;
+    for (size_t i = k; i < j->n; i += j->step)
+        j->c[i].rrc = fq_fs_read_file(j->c[i].dst, &j->c[i].data, &j->c[i].len);
+}
+
+int fq_claim_batch(fq_queue *q, const fq_lease *lease, fq_msg **out, size_t max, size_t *got)
+{
+    if (got) *got = 0;
+    if (!out || !got || max == 0) return FQ_EINVAL;
+    size_t cap = max < FQ_BATCH_CHUNK ? max : FQ_BATCH_CHUNK;
+    claim_ent *c = (claim_ent *)calloc(cap, sizeof(*c));
+    if (!c) return FQ_ERR;
+
+    size_t n_out = 0;
+    int rc = FQ_EEMPTY;
+    for (;;) {
+        /* 1) claim rename은 차례로: 같은 디렉터리 쌍의 rename을 겹치면 NTFS에서 몇 배 느려진다(BENCHMARK.md) */
+        size_t k = 0;
+        int nrc = FQ_OK;
+        while (k < cap && (nrc = claim_next(q, lease, &c[k])) == FQ_OK) {
+            c[k].data = NULL;
+            c[k].len = 0;
+            c[k].rrc = FQ_ERR;        /* 아무도 읽지 않은 항목은 읽기 실패로(성공으로 보이지 않게) */
+            k++;
+        }
+        if (k == 0) { rc = nrc; break; }               /* FQ_EEMPTY 또는 FQ_ERR */
+
+        /* 2) 읽기를 겹쳐서 */
+        claim_job job = { c, k, k < FQ_BATCH_THREADS ? k : FQ_BATCH_THREADS };
+        fq_run_parallel(job.step, claim_read, &job);
+
+        /* 3) 항목 순서대로 마무리(핸들 상태는 호출 스레드만 만진다) */
+        int ferr = 0;
+        for (size_t i = 0; i < k; i++) {
+            int r = claim_finish(q, &c[i], &out[n_out]);
+            if (r == FQ_OK) n_out++;
+            else if (r == FQ_ERR) ferr = 1;
+        }
+        if (n_out) break;
+        if (ferr) { rc = FQ_ERR; break; }
+        /* 모두 건너뜀(회수당함·읽기 실패를 시도로 처리): 다음 후보들로. 위에서 큐가 비었다고 봤어도 다시 본다 —
+         * 읽기 실패로 되돌린 항목(attempt+1)이 새 후보다(fq_claim과 같이, 한도에 닿아 dead/로 갈 때까지) */
+    }
+    free(c);
+    *got = n_out;
+    return n_out ? FQ_OK : rc;
+}
+
+typedef struct { fq_msg **m; int *rc; const char *root; size_t n, step; } ack_job;
+
+static void ack_unlink(void *arg, size_t k)
+{
+    ack_job *j = (ack_job *)arg;
+    for (size_t i = k; i < j->n; i += j->step) {
+        char path[1408];
+        fq_path(path, sizeof(path), j->root, FQ_DIR_INFLIGHT, j->m[i]->name);
+        j->rc[i] = fq_fs_unlink(path);
+    }
+}
+
+int fq_ack_batch(fq_queue *q, fq_msg **msgs, size_t n)
+{
+    if (n == 0) return FQ_OK;
+    if (!msgs) return FQ_EINVAL;
+    int *rcs = (int *)malloc(n * sizeof(*rcs));
+    if (!rcs) {                                   /* 겹치지 못할 뿐: 하나씩 */
+        int rc = FQ_OK;
+        for (size_t i = 0; i < n; i++) {
+            int r = fq_ack(q, msgs[i]);
+            if (r != FQ_OK && rc == FQ_OK) rc = r;
+        }
+        return rc;
+    }
+    for (size_t i = 0; i < n; i++) rcs[i] = FQ_ERR;   /* 아무도 지우지 않은 항목은 실패로 */
+    ack_job job = { msgs, rcs, q->root, n, n < FQ_BATCH_THREADS ? n : FQ_BATCH_THREADS };
+    fq_run_parallel(job.step, ack_unlink, &job);
+    int rc = FQ_OK;
+    for (size_t i = 0; i < n; i++) {
+        if (rcs[i] != FQ_OK && rc == FQ_OK) rc = rcs[i];   /* 항목 순서상 첫 오류 */
+        fq_msg_free(msgs[i]);                               /* 들고 있는 목록은 호출 스레드에서 */
+    }
+    free(rcs);
+    return rc;
 }
 
 /* ---- 골라서 claim / 되돌려 놓기 ---- */
