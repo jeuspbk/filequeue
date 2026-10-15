@@ -67,6 +67,16 @@ int  fq_fs_fsync_dir(const char *path);
 typedef int (*fq_dir_cb)(const char *name, void *ud);
 int  fq_fs_list(const char *dir, fq_dir_cb cb, void *ud);
 
+/* 디렉터리 변경 알림 (fq_wait). 알림은 깨우는 힌트일 뿐이다: 호출자는 깨어나면 디렉터리를 직접 확인해야 하고,
+ * 알림이 오지 않는 스토리지(다른 머신의 변경을 못 보는 NFS·SMB 클라이언트 등)를 위해 주기적으로도 확인해야 한다.
+ * fq_fs_watch_open: 지원하지 않는 플랫폼(Cygwin 등)·실패면 FQ_ERR(호출자는 폴링으로 대신한다).
+ * fq_fs_watch_wait: 그 디렉터리에 이름 변화(생성·rename·삭제)가 있었으면 FQ_OK, timeout_ms 동안 없으면 FQ_EEMPTY,
+ *                   오류면 FQ_ERR. 열어 둔 동안의 변화는 쌓여 있다가 다음 wait에서 바로 돌아온다(놓치지 않음). */
+typedef struct fq_watch fq_watch;
+int  fq_fs_watch_open(const char *dir, fq_watch **out);
+int  fq_fs_watch_wait(fq_watch *w, uint32_t timeout_ms);
+void fq_fs_watch_close(fq_watch *w);
+
 /* 권고 배타 락 시도. 보유 중이면 FQ_ELOCKED. 성공 시 *out에 핸들. */
 int  fq_fs_trylock(const char *path, fq_lock **out);
 int  fq_fs_unlock(fq_lock *lock);

@@ -74,6 +74,7 @@ void fq_close(fq_queue *q)
     if (!q) return;
     if (q->lead_held) fq_release_leadership(q, &q->lead_lease);  /* 실패해도 리스 만료로 넘어간다 */
     claim_cache_clear(q);
+    fq_fs_watch_close(q->inc_watch);
     /* 아직 들고 있는 메시지는 핸들보다 오래 살 수 있다: 나중의 fq_msg_free가 해제된 핸들을 건드리지 않게 */
     for (size_t i = 0; i < q->held_n; i++) q->held[i]->owner = NULL;
     free(q->held);

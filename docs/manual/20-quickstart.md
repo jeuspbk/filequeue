@@ -94,9 +94,10 @@ fq_open("/shared/myqueue", "nodeA", &q);   /* node_id를 여기서 한 번만 �
 fq_msg *m = NULL;
 for (;;) {
     int rc = fq_consume(q, &m);             /* 획득·복구·하트비트·claim 자동 */
-    if (rc == FQ_OK)        { /* 처리(멱등) */ fq_ack(q, m); }
-    else if (rc == FQ_ERR)  sleep_ms(1000); /* 일시적일 수 있음(I/O 오류): 로그 남기고 잠시 뒤 재시도 */
-    else                    sleep_ms(20);   /* FQ_EEMPTY(내가 리더,빔) 또는 FQ_ELOCKED(대기) */
+    if (rc == FQ_OK)          { /* 처리(멱등) */ fq_ack(q, m); }
+    else if (rc == FQ_EEMPTY) fq_wait(q, 1000);  /* 내가 리더, 빔: 메시지가 생기면 곧 깨어난다 */
+    else if (rc == FQ_ERR)    sleep_ms(1000);    /* 일시적일 수 있음(I/O 오류): 로그 남기고 잠시 뒤 재시도 */
+    else                      sleep_ms(100);     /* FQ_ELOCKED(대기 노드) */
 }
 ```
 

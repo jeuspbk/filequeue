@@ -163,6 +163,17 @@ int  fq_consume(fq_queue *q, fq_msg **out);
 /* fq_consume과 같되 fq_claim_batch로 최대 max건을 받는다(위 "묶음 소비"). 반환은 fq_consume과 같고
  * FQ_OK면 *got >= 1. */
 int  fq_consume_batch(fq_queue *q, fq_msg **out, size_t max, size_t *got);
+/* fq_wait: fq_consume(_batch)이 FQ_EEMPTY를 준 뒤 쉬는 자리에 쓴다. incoming/에 메시지가 생길 때까지 최대
+ * timeout_ms 기다린다. FQ_OK = incoming/이 비어 있지 않음(곧바로 fq_consume), FQ_EEMPTY = 시간이 다 됨.
+ *   - 로컬에서는 디렉터리 변경 알림(Win32 FindFirstChangeNotification, Linux inotify)으로 곧바로 깨어난다.
+ *     알림은 힌트일 뿐이라 깨어나면 디렉터리를 직접 확인하고, 알림이 오지 않는 곳(다른 머신이 쓴 NFS·SMB,
+ *     알림 미지원인 Cygwin 등)을 위해 FQ_WAIT_POLL_MS마다도 확인한다 — 최악 지연이 이 값이다.
+ *   - 이 핸들이 fq_consume으로 리더라면 다음 하트비트 시각을 넘겨 자지 않는다(FQ_EEMPTY로 일찍 돌아온다):
+ *     넘기면 리스 자체 만료로 리더십을 내려놓게 된다. 그러니 돌아오면 항상 fq_consume을 다시 부를 것.
+ *   - 대기 노드(fq_consume이 FQ_ELOCKED)에는 쓰지 말 것: 메시지가 있으면 곧바로 FQ_OK라 바쁜 루프가 된다.
+ *   알림 핸들은 처음 호출 때 열어 fq_close까지 유지한다. */
+#define FQ_WAIT_POLL_MS 100
+int  fq_wait(fq_queue *q, uint32_t timeout_ms);
 /* fq_consume과 같되 fq_claim_if로 고른다. */
 int  fq_consume_if(fq_queue *q, fq_want_fn want, void *ud, fq_msg **out);
 /* fq_takeover: 같은 node_id로 연 이전 핸들이 죽었음을 호출자가 보증할 때, 그 리스를 만료(FQ_LEASE_MS)를

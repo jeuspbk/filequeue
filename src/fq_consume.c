@@ -6,6 +6,7 @@
  */
 #include "fq.h"
 #include "fq_internal.h"
+#include "fq_fs.h"
 
 #include <stdlib.h>
 
@@ -126,6 +127,47 @@ int fq_consume_batch(fq_queue *q, fq_msg **out, size_t max, size_t *got)
     int rc = lead(q);
     if (rc != FQ_OK) return rc;
     return fq_claim_batch(q, &q->lead_lease, out, max, got);
+}
+
+/* ---- fq_wait (fq.h) ---- */
+
+int fq_test_wait_nowatch = 0;   /* 테스트 전용(fq_internal.h) */
+
+static int any_cb(const char *name, void *ud) { (void)name; (void)ud; return 1; }
+
+/* incoming/에 항목이 하나라도 있는가(첫 항목에서 나열을 멈춘다). 나열 오류는 "있음"으로 봐서 호출자가
+ * fq_consume으로 실제 상태를 보게 한다. */
+static int incoming_nonempty(fq_queue *q)
+{
+    char dir[1280];
+    fq_path(dir, sizeof(dir), q->root, FQ_DIR_INCOMING, NULL);
+    return fq_fs_list(dir, any_cb, NULL) != FQ_OK;
+}
+
+int fq_wait(fq_queue *q, uint32_t timeout_ms)
+{
+    if (!q->inc_watch_tried && !fq_test_wait_nowatch) {
+        q->inc_watch_tried = 1;
+        char dir[1280];
+        fq_path(dir, sizeof(dir), q->root, FQ_DIR_INCOMING, NULL);
+        if (fq_fs_watch_open(dir, &q->inc_watch) != FQ_OK) q->inc_watch = NULL;   /* 미지원: 폴링 */
+    }
+    uint64_t now = fq_now_mono_ms();
+    uint64_t deadline = now + timeout_ms;
+    /* 리더면 다음 하트비트 전에 돌아온다: 하트비트는 fq_consume이 친다 */
+    if (q->lead_held && q->lead_next_renew_ms < deadline)
+        deadline = q->lead_next_renew_ms > now ? q->lead_next_renew_ms : now;
+    for (;;) {
+        /* 기다리기 전에 먼저 본다: 알림을 연 뒤에 들어온 것은 알림이 쌓아 두지만, 그 전에 들어온 것은 여기서만 보인다 */
+        if (incoming_nonempty(q)) return FQ_OK;
+        now = fq_now_mono_ms();
+        if (now >= deadline) return FQ_EEMPTY;
+        uint64_t left = deadline - now;
+        uint32_t slice = (uint32_t)(left < FQ_WAIT_POLL_MS ? left : FQ_WAIT_POLL_MS);
+        /* 알림(이 디렉터리의 이름 변화, 내 claim·ack도 포함)이나 slice가 지나면 다시 확인 */
+        if (!q->inc_watch || fq_test_wait_nowatch || fq_fs_watch_wait(q->inc_watch, slice) == FQ_ERR)
+            fq_sleep_ms(slice);
+    }
 }
 
 int fq_consume_if(fq_queue *q, fq_want_fn want, void *ud, fq_msg **out)

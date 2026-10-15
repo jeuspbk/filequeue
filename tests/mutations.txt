@@ -43,3 +43,5 @@ B08 스레드를 못 만들면 그 몫을 아무도 안 함#src/fq_util.c#if (!s
 R01 묶음 claim: 모두 건너뛴 뒤 "비었음"이면 끝냄(되돌린 항목을 다시 안 봄)#src/fq_queue.c#if (ferr) { rc = FQ_ERR; break; }#if (ferr || nrc != FQ_OK) { rc = ferr ? FQ_ERR : nrc; break; }
 R02 묶음 ack: unlink 오류를 알리지 않음#src/fq_queue.c#if (rcs[i] != FQ_OK && rc == FQ_OK) rc = rcs[i];#;
 R03 묶음 claim: 한 번에 FQ_BATCH_CHUNK 상한 없음#src/fq_queue.c#size_t cap = max < FQ_BATCH_CHUNK ? max : FQ_BATCH_CHUNK;#size_t cap = max;
+Q01 fq_wait가 리더의 하트비트 시각을 넘겨 잠#src/fq_consume.c#if (q->lead_held && q->lead_next_renew_ms < deadline)#if (0)
+Q02 fq_wait 폴링 경로가 남은 시간 내내 잠(디렉터리를 다시 안 봄)#src/fq_consume.c#fq_sleep_ms(slice);#fq_sleep_ms((uint32_t)left);

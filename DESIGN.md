@@ -310,9 +310,13 @@ ack 없이 해제한 메시지). 핸들은 claim해서 아직 들고 있는 메�
 - **GC:** 임계시간을 넘긴 크래시 잔재 정리. `tmp/`는 전부(발행 중 크래시), `control/`은 이름으로 골라
   `.now-*`(FS 시각 측정), `leader-*.tmp`(leader.info 교체 중), `election.lock.stale-*`만. 살아 있는
   `leader.info`·`election.lock`은 건드리지 않는다. 임계시간은 발행·하트비트 한 번보다 충분히 길게.
-- **폴링 vs 알림:** 베이스라인은 디렉터리 폴링(공유/네트워크 FS에서 가장 호환). 저지연이 필요하면
-  Windows `ReadDirectoryChangesW`(로컬), Linux `inotify`를 최적화로 추가.
-  단, 네트워크 공유에선 알림이 안 올 수 있으므로 폴링은 항상 유지.
+- **폴링 vs 알림 (`fq_wait`, 27차):** 베이스라인은 디렉터리 폴링(공유/네트워크 FS에서 가장 호환). `fq_wait`가 로컬
+  변경 알림(Win32 `FindFirstChangeNotification`, Linux `inotify`, `fq_fs.h`의 `fq_fs_watch_*`)으로 빈 큐 대기를 깨운다.
+  알림은 힌트일 뿐 상태가 아니다: 깨어나면 디렉터리를 직접 확인하고, 다른 머신의 변경을 못 보는 공유 스토리지를
+  위해 `FQ_WAIT_POLL_MS`(100 ms)마다도 확인한다(알림이 고장 나도 지연만 늘 뿐 정확성은 그대로). 알림 핸들은 핸들
+  수명 동안 유지해 대기 사이의 변화도 쌓이게 하고, 기다리기 전에 먼저 확인해 잃어버린 깨움을 막는다. 리더는 다음
+  하트비트 시각을 넘겨 자지 않는다(리스 자체 만료 방지). 실측(120 ms 뒤 발행): 알림 네이티브 Win32 140 ms·Linux 125 ms,
+  폴링 경로 200~235 ms. Cygwin 빌드는 알림이 없어 폴링만 한다.
 - **순서:** 단일 활성 소비자가 파일명 정렬 순으로 oldest-first 처리하면 best-effort FIFO.
   (실패 복구 시 중복으로 인한 미세 재정렬은 발생 가능). stream_key는 이름의 꼬리표일 뿐 키별 순서·분배는
   구현돼 있지 않다(키별 순서 = 전역 best-effort 순서). 먼저 처리할 것은 순서 지정 발행(HEAD/BEFORE)으로.
@@ -360,6 +364,7 @@ int  fq_publish_batch(fq_queue *q, const fq_item *items, size_t n, size_t *publi
 /* Consumer: 통합 wrapper (리더십·하트비트·stale 복구 자동) */
 int  fq_consume(fq_queue *q, fq_msg **out);   /* FQ_OK / FQ_EEMPTY / FQ_ELOCKED(대기) */
 int  fq_heartbeat(fq_queue *q);               /* 긴 처리 중 리스 연장 */
+int  fq_wait(fq_queue *q, uint32_t timeout_ms); /* 빈 큐 대기: 변경 알림 + FQ_WAIT_POLL_MS 확인 */
 int  fq_takeover(fq_queue *q);                /* 같은 node_id의 죽은 핸들 리스를 즉시 인수 */
 int  fq_ack(fq_queue *q, fq_msg *m);          /* inflight unlink. FQ_ENOENT = 이미 회수됨(재전달 예정) */
 int  fq_nack(fq_queue *q, fq_msg *m);         /* 즉시 requeue (attempt+1, 한도면 dead/) */

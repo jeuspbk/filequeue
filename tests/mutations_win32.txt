@@ -8,3 +8,4 @@ W03 긴 경로 실패를 경합 패배(ENOENT)로 봄(9차: claim 무한 재시�
 W04 rename_noreplace가 "대상 존재"를 FQ_EEXIST로 구분 안 함#src/fq_fs_win32.c#if (e == ERROR_ALREADY_EXISTS || e == ERROR_FILE_EXISTS) return FQ_EEXIST;#;
 W05 읽기에 FILE_SHARE_DELETE 없음(읽는 동안 남의 rename·unlink 실패)#src/fq_fs_win32.c#FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,#FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
 W06 기록 뒤 FlushFileBuffers 생략(내구성: 전원 차단 없이는 못 잡음 → 놓침이 정상)#src/fq_fs_win32.c#if (!FlushFileBuffers(h)) return write_fail(path, h);#;
+W07 fq_wait 변경 알림을 열지 않음(폴링으로만 깸)#src/fq_fs_win32.c#HANDLE h = FindFirstChangeNotificationA(dir, FALSE, FILE_NOTIFY_CHANGE_FILE_NAME);#HANDLE h = INVALID_HANDLE_VALUE; (void)dir;

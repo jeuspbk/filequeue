@@ -35,6 +35,7 @@ API의 **정본은 `include/fq.h`의 선언과 주석**이다. 이 절은 표 �
 | `FQ_ELECTION_STALE_MS` | 30000 | `election.lock` 강제 회수 임계의 상한(ms). 실제 임계 = min(이 값, 리스/3) |
 | `FQ_BATCH_CHUNK` | 256 | 배치 발행이 한 번에 기록·rename하는 건수, 묶음 소비가 한 번에 주는 최대 건수 |
 | `FQ_BATCH_THREADS` | 8 | 배치 발행·묶음 소비가 겹치는 내부 스레드 수(최대 16) |
+| `FQ_WAIT_POLL_MS` | 100 | `fq_wait`가 변경 알림과 별도로 `incoming/`을 직접 확인하는 주기(ms). 알림이 오지 않는 곳(다른 머신이 쓴 NFS·SMB, Cygwin)의 최악 지연 |
 
 ## 데이터 구조
 
@@ -201,6 +202,7 @@ typedef int (*fq_want_fn)(const void *data, size_t len, void *ud);
 | `fq_consume` | `int fq_consume(fq_queue *q, fq_msg **out)` | 리더십 획득/유지·`recover_stale`·하트비트·`claim`을 자동 처리하고 다음 메시지를 반환. 식별자는 `q->node_id` 사용. |
 | `fq_consume_if` | `int fq_consume_if(fq_queue *q, fq_want_fn want, void *ud, fq_msg **out)` | `fq_consume`과 같되 `fq_claim_if`로 고른다. |
 | `fq_takeover` | `int fq_takeover(fq_queue *q)` | 같은 node_id로 연 이전 핸들이 죽었음을 호출자가 보증할 때, 그 리스를 만료를 기다리지 않고 넘겨받는다(재기동 직후 한 번). 이후 `fq_consume`/`fq_consume_if`가 바로 claim한다. 선임자의 inflight는 회수된다(attempt+1). 다른 node_id의 유효한 리스는 건드리지 않는다. `FQ_OK` 이 핸들이 리더, `FQ_ELOCKED` 다른 노드가 리더 또는 선출 락이 잡혀 있음(잠시 후 재시도), `FQ_ERR` 오류. |
+| `fq_wait` | `int fq_wait(fq_queue *q, uint32_t timeout_ms)` | `fq_consume`이 `FQ_EEMPTY`를 준 뒤 쉬는 자리에 쓴다. `incoming/`에 메시지가 생길 때까지 최대 `timeout_ms` 기다린다. `FQ_OK` 메시지 있음(곧바로 `fq_consume`), `FQ_EEMPTY` 시간이 다 됨. 아래 참고. |
 | `fq_heartbeat` | `int fq_heartbeat(fq_queue *q)` | `fq_consume` 사용자용 하트비트. 주기와 무관하게 즉시 리스를 연장하고 stale inflight를 회수한다. `FQ_OK` 연장됨, `FQ_ELOCKED` 리더가 아님, `FQ_ERR` 오류 또는 선출 락이 잠시 잡혀 있음(리더십 유지, 다시 호출). |
 
 반환값:
@@ -211,6 +213,25 @@ typedef int (*fq_want_fn)(const void *data, size_t len, void *ud);
 | `FQ_EEMPTY` | 내가 활성 리더이나 큐가 빔 | 잠시 후 재호출 |
 | `FQ_ELOCKED` | 다른 노드가 활성 리더(대기 상태) | 잠시 후 재호출 |
 | `FQ_ERR` | 오류(일시적일 수 있음). 리더의 하트비트 실패는 여기 해당하지 않음(claim 계속) | 잠시 후 재호출 |
+
+### 비었을 때 기다리기: `fq_wait`
+
+```c
+for (;;) {
+    int rc = fq_consume(q, &m);
+    if (rc == FQ_OK)          { /* 처리(멱등) */ fq_ack(q, m); }
+    else if (rc == FQ_EEMPTY) fq_wait(q, 1000);   /* 메시지가 생기면 곧 깨어난다 */
+    else                      sleep_ms(rc == FQ_ERR ? 1000 : 100);   /* FQ_ELOCKED(대기 노드)·오류 */
+}
+```
+
+- 로컬에서는 디렉터리 변경 알림(네이티브 Win32 `FindFirstChangeNotification`, Linux `inotify`)으로 발행 직후(수 ms)
+  깨어난다. 알림은 힌트일 뿐이라 깨어나면 `incoming/`을 직접 확인하고, 알림이 오지 않는 곳(다른 머신이 쓴 NFS·SMB,
+  알림이 없는 Cygwin 빌드)을 위해 `FQ_WAIT_POLL_MS`(100 ms)마다도 확인한다 — 최악 지연이 이 값이다.
+- 이 핸들이 `fq_consume`으로 리더라면 다음 하트비트 시각을 넘겨 자지 않는다(`FQ_EEMPTY`로 일찍 돌아온다).
+  돌아오면 항상 `fq_consume`을 다시 부를 것 — 하트비트는 `fq_consume`이 친다.
+- 대기 노드(`FQ_ELOCKED`)에는 쓰지 말 것: 메시지가 있으면 곧바로 `FQ_OK`라 바쁜 루프가 된다.
+- 알림 핸들은 처음 호출 때 열어 `fq_close`까지 유지한다(그 사이 변화는 쌓여 있어 놓치지 않는다).
 
 `fq_consume`은 **리스 자체 만료를 스스로 감지**한다. 마지막 성공 갱신 뒤 리스 길이(`FQ_LEASE_MS`)가
 지났다면(GC 멈춤, 절전, 긴 처리) 옛 token으로 claim을 계속하지 않고 리더십을 내려놓은 뒤

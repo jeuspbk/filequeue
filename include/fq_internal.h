@@ -55,6 +55,11 @@ struct fq_queue {
     uint64_t lead_last_renew_ms;   /* 마지막으로 리스를 성공적으로 썼던 시각 (단조 시계 ms).
                                       이후 리스 길이만큼 지났으면 FS상 만료됐을 수 있으므로
                                       리더십을 내려놓고 election.lock을 거쳐 다시 얻는다. */
+
+    /* fq_wait: incoming/ 변경 알림. 처음 fq_wait에서 열고 fq_close에서 닫는다(열어 둔 동안의 변화는 쌓인다).
+     * 열 수 없으면(미지원 플랫폼) inc_watch_tried만 세우고 폴링한다. */
+    struct fq_watch *inc_watch;
+    int      inc_watch_tried;
 };
 
 /* ---- 유틸 (fq_util.c) ---- */
@@ -113,6 +118,8 @@ int      fq_acquire_lease(fq_queue *q, fq_lease *lease, int same_node);
 extern void (*fq_test_hook_before_elock)(fq_queue *q);
 /* 테스트 훅: 0이 아니면 fq_run_parallel이 스레드를 만들지 않는다(생성 실패를 흉내 냄 → 호출 스레드가 대신 한다). */
 extern int fq_test_par_nothreads;
+/* 테스트 훅: 0이 아니면 fq_wait가 변경 알림을 쓰지 않는다(미지원 플랫폼의 폴링 경로를 흉내 냄). */
+extern int fq_test_wait_nowatch;
 
 /* ---- 실패한 inflight 재큐잉 (fq_queue.c) ----
  * inflight/<name>을 실패한 시도 한 번으로 처리: attempt+1로 incoming/<base>.a<N>, 한도에 닿으면

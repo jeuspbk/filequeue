@@ -287,6 +287,37 @@ int fq_fs_list(const char *dir, fq_dir_cb cb, void *ud)
     return rc;
 }
 
+/* 변경 알림: FindFirstChangeNotification. 핸들은 다음 FindNextChangeNotification까지 신호 상태로 남으므로
+ * wait 사이에 생긴 변화도 놓치지 않는다. */
+struct fq_watch { HANDLE h; };
+
+int fq_fs_watch_open(const char *dir, fq_watch **out)
+{
+    HANDLE h = FindFirstChangeNotificationA(dir, FALSE, FILE_NOTIFY_CHANGE_FILE_NAME);
+    if (h == INVALID_HANDLE_VALUE) return FQ_ERR;
+    fq_watch *w = (fq_watch *)malloc(sizeof(*w));
+    if (!w) { FindCloseChangeNotification(h); return FQ_ERR; }
+    w->h = h;
+    *out = w;
+    return FQ_OK;
+}
+
+int fq_fs_watch_wait(fq_watch *w, uint32_t timeout_ms)
+{
+    DWORD r = WaitForSingleObject(w->h, timeout_ms);
+    if (r == WAIT_TIMEOUT) return FQ_EEMPTY;
+    if (r != WAIT_OBJECT_0) return FQ_ERR;
+    if (!FindNextChangeNotification(w->h)) return FQ_ERR;   /* 다시 무장 */
+    return FQ_OK;
+}
+
+void fq_fs_watch_close(fq_watch *w)
+{
+    if (!w) return;
+    FindCloseChangeNotification(w->h);
+    free(w);
+}
+
 int fq_fs_trylock(const char *path, fq_lock **out)
 {
     HANDLE h = CreateFileA(path, GENERIC_READ | GENERIC_WRITE,

@@ -27,6 +27,21 @@ static int fails = 0;
 } while (0)
 
 /* [13] fq_test_hook_before_elock: 락 밖 만료 확인과 락 획득 사이에 다른 핸들의 인수를 한 번 끼워 넣는다 */
+/* [15]용: 잠깐 뒤 다른 핸들로 발행하는 스레드 */
+typedef struct { fq_queue *q; int delay_ms; } late_pub;
+#if defined(_WIN32) && !defined(__CYGWIN__)
+static DWORD WINAPI late_publish(LPVOID a)
+#else
+#  include <pthread.h>
+static void *late_publish(void *a)
+#endif
+{
+    late_pub *lp = (late_pub *)a;
+    fq_sleep_ms(lp->delay_ms);
+    fq_publish(lp->q, "late", 4, NULL);
+    return 0;
+}
+
 static fq_queue *hook_other;
 static fq_lease  hook_lease;
 static int       hook_rc = FQ_ERR;
@@ -372,6 +387,76 @@ int main(int argc, char **argv)
             if (m) fq_ack(qo, m);
             fq_close(qo);
         }
+    }
+
+    printf("[15] fq_wait: 비면 기다리고, 메시지가 생기면 곧 깨어나고, 리더는 하트비트 전에 돌아온다\n");
+    {
+        char wroot[1100];
+        snprintf(wroot, sizeof(wroot), "%s/wait", root);
+        fq_queue *qw = NULL, *qp = NULL;
+        CHECK(fq_open(wroot, "nodeW", &qw) == FQ_OK && fq_open(wroot, "nodeP", &qp) == FQ_OK, "fq_open (별도 큐, 소비·발행 핸들)");
+        if (qw && qp) {
+            fq_msg *m = NULL;
+            while (fq_consume(qw, &m) == FQ_OK) fq_ack(qw, m);    /* 이전 실행의 잔여 + 리더 획득 */
+            CHECK(qw->lead_held, "소비 핸들이 리더");
+            qw->lead_next_renew_ms = fq_now_mono_ms() + 60000;   /* 하트비트 제한이 끼어들지 않게 */
+
+            uint64_t t0 = fq_now_mono_ms();
+            int rc = fq_wait(qw, 300);
+            uint64_t el = fq_now_mono_ms() - t0;
+            CHECK(rc == FQ_EEMPTY && el >= 250 && el < 2000, "빈 큐: 시간이 다 되면 FQ_EEMPTY (약 300ms)");
+
+            fq_publish(qp, "now", 3, NULL);
+            t0 = fq_now_mono_ms();
+            rc = fq_wait(qw, 5000);
+            el = fq_now_mono_ms() - t0;
+            CHECK(rc == FQ_OK && el < 200, "이미 메시지가 있으면 곧바로 FQ_OK");
+            while (fq_consume(qw, &m) == FQ_OK) fq_ack(qw, m);
+
+            for (int nowatch = 0; nowatch <= 1; nowatch++) {
+                fq_test_wait_nowatch = nowatch;
+                late_pub lp = { qp, 120 };
+#if defined(_WIN32) && !defined(__CYGWIN__)
+                HANDLE th = CreateThread(NULL, 0, late_publish, &lp, 0, NULL);
+                int started = th != NULL;
+#else
+                pthread_t th;
+                int started = pthread_create(&th, NULL, late_publish, &lp) == 0;
+#endif
+                t0 = fq_now_mono_ms();
+                rc = started ? fq_wait(qw, 5000) : FQ_ERR;
+                el = fq_now_mono_ms() - t0;
+#if defined(_WIN32) && !defined(__CYGWIN__)
+                if (started) { WaitForSingleObject(th, INFINITE); CloseHandle(th); }
+#else
+                if (started) pthread_join(th, NULL);
+#endif
+                printf("  [INFO] %s: 120ms 뒤 발행 → %llums 만에 깨어남\n", nowatch ? "폴링 경로" : "기본(알림 있으면 알림)",
+                       (unsigned long long)el);
+                CHECK(rc == FQ_OK && el >= 100 && el < 1000,
+                      nowatch ? "알림 없이(폴링 경로)도 발행 뒤 FQ_WAIT_POLL_MS 안팎에 깨어남"
+                              : "다른 핸들이 발행하면 깨어남 (시간 제한 5초보다 훨씬 일찍)");
+#if (defined(_WIN32) && !defined(__CYGWIN__)) || defined(__linux__)
+                if (!nowatch) {
+                    /* 알림을 지원하는 플랫폼: 폴링은 120ms 발행을 다음 확인(200ms)에야 보므로, 그 전에 깼으면 알림 덕이다 */
+                    CHECK(qw->inc_watch != NULL, "  ... 변경 알림이 열려 있음 (Win32·Linux)");
+                    CHECK(el < 185, "  ... 폴링 주기(다음 확인 200ms)보다 일찍 깨어남 = 알림으로 깸");
+                }
+#endif
+                while (fq_consume(qw, &m) == FQ_OK) fq_ack(qw, m);
+            }
+            fq_test_wait_nowatch = 0;
+
+            /* 리더는 다음 하트비트 시각을 넘겨 자지 않는다 */
+            qw->lead_next_renew_ms = fq_now_mono_ms() + 200;
+            t0 = fq_now_mono_ms();
+            rc = fq_wait(qw, 5000);
+            el = fq_now_mono_ms() - t0;
+            CHECK(rc == FQ_EEMPTY && el < 1000, "리더: 하트비트 시각(200ms 뒤)에 FQ_EEMPTY로 돌아옴");
+            CHECK(fq_consume(qw, &m) == FQ_EEMPTY && qw->lead_held, "  ... 이어서 fq_consume이 하트비트 (리더 유지)");
+        }
+        if (qp) fq_close(qp);
+        if (qw) fq_close(qw);
     }
 
     fq_close(qa);

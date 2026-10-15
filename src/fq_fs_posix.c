@@ -281,4 +281,52 @@ int fq_fs_path_fits(const char *path, size_t extra)
     return 1;
 }
 
+/* 변경 알림: Linux는 inotify(이벤트는 커널 큐에 쌓여 wait 사이의 변화도 놓치지 않는다).
+ * 그 밖(Cygwin 등)은 미지원 → 호출자가 폴링한다. inotify는 다른 머신이 NFS·CIFS에 만든 변화를 보지 못하므로
+ * 호출자는 주기적 확인을 함께 해야 한다(fq_fs.h). */
+#if defined(__linux__)
+#include <sys/inotify.h>
+#include <poll.h>
+
+struct fq_watch { int fd; };
+
+int fq_fs_watch_open(const char *dir, fq_watch **out)
+{
+    int fd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
+    if (fd < 0) return FQ_ERR;
+    if (inotify_add_watch(fd, dir, IN_CREATE | IN_MOVED_TO | IN_MOVED_FROM | IN_DELETE) < 0) {
+        close(fd);
+        return FQ_ERR;
+    }
+    fq_watch *w = (fq_watch *)malloc(sizeof(*w));
+    if (!w) { close(fd); return FQ_ERR; }
+    w->fd = fd;
+    *out = w;
+    return FQ_OK;
+}
+
+int fq_fs_watch_wait(fq_watch *w, uint32_t timeout_ms)
+{
+    struct pollfd p = { w->fd, POLLIN, 0 };
+    int r = poll(&p, 1, (int)timeout_ms);
+    if (r == 0) return FQ_EEMPTY;
+    if (r < 0) return errno == EINTR ? FQ_EEMPTY : FQ_ERR;
+    char buf[4096];
+    while (read(w->fd, buf, sizeof(buf)) > 0) { }       /* 쌓인 이벤트를 비운다(내용은 보지 않는다) */
+    return FQ_OK;
+}
+
+void fq_fs_watch_close(fq_watch *w)
+{
+    if (!w) return;
+    close(w->fd);
+    free(w);
+}
+#else
+struct fq_watch { int unused; };
+int  fq_fs_watch_open(const char *dir, fq_watch **out) { (void)dir; (void)out; return FQ_ERR; }
+int  fq_fs_watch_wait(fq_watch *w, uint32_t timeout_ms) { (void)w; (void)timeout_ms; return FQ_ERR; }
+void fq_fs_watch_close(fq_watch *w) { (void)w; }
+#endif
+
 #endif /* !_WIN32 || __CYGWIN__ */
