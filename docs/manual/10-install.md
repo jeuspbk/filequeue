@@ -45,6 +45,7 @@ bash tests/test_concurrency.sh ./build/fq_producer ./build/fq_consumer
 
 # 변이 테스트 (선택, 약 45분): 방어 로직을 하나씩 끈 코드로 위 테스트를 돌려 잡아내는지 확인
 bash tests/mutate.sh      # 결과: build/mut/result.txt ("놓침" = 그 방어를 검사하는 테스트가 없음)
+MUT_PLAT=win32 bash tests/mutate.sh   # Win32 전용 방어를 MinGW 네이티브 빌드로 (결과: build/mut/result_win32.txt)
 ```
 
 > 동시성 테스트의 [B]는 활성 소비자가 메시지를 처리했지만 ack하기 전에 `kill -9`로 죽이고, 새 리더가 그

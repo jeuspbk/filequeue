@@ -15,7 +15,7 @@ M12 claim 긴 이름 격리 대신 오류#src/fq_queue.c#if (quarantine_incoming
 M13 DLQ 이름 검증 제거#src/fq_queue.c#if (!valid_entry_name(name)) return FQ_EINVAL;#if (!name) return FQ_EINVAL;
 M14 claim 뒤 읽기 실패를 시도로 안 침#src/fq_queue.c#if (fq_requeue_inflight(q, c->inf_name, NULL) != FQ_OK) {#if (1) {
 M15 stale 락 회수 안 함#src/fq_leader.c#now > lock_mtime + fq_election_stale_ms() &&#0 &&
-M16 긴 루트 검사 제거(Win32 전용: POSIX에선 놓침이 정상, 네이티브 test_consume [10]이 잡음)#src/fq_queue.c#if (!fq_fs_path_fits(probe, 1 + 65 + strlen(q->node_id) + (255 - FQ_MSG_NAME_MAX))) {#if (0) {
+M16 긴 루트 검사 제거(Win32 전용: POSIX에선 놓침이 정상, MUT_PLAT=win32에서 test_consume이 잡음)#src/fq_queue.c#if (!fq_fs_path_fits(probe, 1 + 65 + strlen(q->node_id) + (255 - FQ_MSG_NAME_MAX))) {#if (0) {
 N01 HEAD 발행이 claim 캐시를 무효화 안 함#src/fq_queue.c#claim_cache_clear(q);                            /* 이 핸들의 캐시가 새 맨 앞을 놓치지 않게 */#;
 N02 fq_release가 claim 캐시를 무효화 안 함#src/fq_queue.c#claim_cache_clear(q);                               /* 되돌린 메시지가 다시 맨 앞 후보 */#;
 N03 fq_redrive가 claim 캐시를 무효화 안 함#src/fq_queue.c#claim_cache_clear(q);                                /* 오래된 시각이라 캐시보다 앞일 수 있다 */#;

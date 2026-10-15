@@ -52,6 +52,47 @@ static int thread_start(thread_t *t, thread_ret (*fn)(void *), void *arg)
 static void thread_join(thread_t t) { pthread_join(t, NULL); }
 #endif
 
+#if defined(_WIN32) && !defined(__CYGWIN__)
+/* [7]용: 잠깐 뒤에 핸들을 닫는다(남이 파일을 잠깐 쥐고 있는 상황) */
+static thread_ret THREAD_CALL close_later(void *arg)
+{
+    Sleep(5);
+    CloseHandle(*(HANDLE *)arg);
+    return 0;
+}
+
+/* 이 볼륨이 핸들 기반 POSIX 의미 rename(FileRenameInfoEx)을 지원하는가. 라이브러리(fq_fs_replace)와 따로
+ * 직접 시험한다 — 라이브러리 쪽이 고장 나도(변이 W01) 이 판정은 그대로여야 검사가 의미 있다.
+ * NTFS(Win10 1809+)는 지원, SMB는 미지원(DESIGN.md §0). */
+static int volume_has_posix_rename(const char *dir)
+{
+    char a[1100], b[1100];
+    snprintf(a, sizeof(a), "%s/w_probe_a", dir);
+    snprintf(b, sizeof(b), "%s/w_probe_b", dir);
+    fq_fs_unlink(a); fq_fs_unlink(b);
+    if (fq_fs_write_sync(a, "p", 1) != FQ_OK) return 0;
+    WCHAR wb[1100], wfull[1100];
+    int ok = 0;
+    DWORD fl = 0;
+    if (MultiByteToWideChar(CP_ACP, 0, b, -1, wb, 1100) > 0) fl = GetFullPathNameW(wb, 1100, wfull, NULL);
+    HANDLE h = (fl > 0 && fl < 1100)
+        ? CreateFileA(a, DELETE | SYNCHRONIZE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+                      OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL)
+        : INVALID_HANDLE_VALUE;
+    if (h != INVALID_HANDLE_VALUE) {
+        struct { DWORD Flags; HANDLE Root; DWORD Len; WCHAR Name[1100]; } ri;
+        memset(&ri, 0, sizeof(ri));
+        ri.Flags = 0x1 | 0x2;                          /* REPLACE_IF_EXISTS | POSIX_SEMANTICS */
+        ri.Len = (DWORD)(fl * sizeof(WCHAR));
+        memcpy(ri.Name, wfull, ri.Len);
+        ok = SetFileInformationByHandle(h, (FILE_INFO_BY_HANDLE_CLASS)22 /* FileRenameInfoEx */, &ri, sizeof(ri)) != 0;
+        CloseHandle(h);
+    }
+    fq_fs_unlink(a); fq_fs_unlink(b);
+    return ok;
+}
+#endif
+
 static thread_ret THREAD_CALL replace_writer(void *arg)
 {
     replace_ctx *c = (replace_ctx *)arg;
@@ -173,6 +214,50 @@ int main(int argc, char **argv)
         CHECK(misses == 0, "재시도 읽기(fq_read_replaced)는 항상 성공");
         fq_fs_unlink(c.target);
     }
+
+#if defined(_WIN32) && !defined(__CYGWIN__)
+    /* 7) Win32 전용: 다른 핸들이 연 파일과 겹치는 교체·rename. [6]은 타이밍에 따라 겹치지 않고도 통과할 수
+     *    있어서, 겹침을 결정적으로 만든다(변이 W01·W02: tests/mutations_win32.txt). */
+    printf("[7] Win32: 다른 핸들이 연 파일의 교체·rename\n");
+    {
+        char tgt[1100], tmp[1100], src[1100], dst[1100];
+        snprintf(tgt, sizeof(tgt), "%s/w_target", dir);
+        snprintf(tmp, sizeof(tmp), "%s/w_target.tmp", dir);
+        fq_fs_unlink(tgt);
+        CHECK(fq_fs_write_sync(tgt, "old", 3) == FQ_OK && fq_fs_write_sync(tmp, "new", 3) == FQ_OK, "대상·새 내용 작성");
+        /* 대기 노드가 leader.info를 읽는 중: fq_fs_read_file과 같은 공유 모드로 열어 둔다 */
+        HANDLE rd = CreateFileA(tgt, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+        CHECK(rd != INVALID_HANDLE_VALUE, "대상을 읽기 핸들로 열어 둠");
+        int rrc = fq_fs_replace(tmp, tgt);
+        if (rd != INVALID_HANDLE_VALUE) CloseHandle(rd);
+        if (volume_has_posix_rename(dir)) {
+            CHECK(rrc == FQ_OK, "열린 대상도 fq_fs_replace로 교체 (POSIX 의미 rename. MoveFileEx는 거부)");
+            void *d = NULL; size_t n = 0;
+            CHECK(fq_fs_read_file(tgt, &d, &n) == FQ_OK && n == 3 && memcmp(d, "new", 3) == 0, "  ... 새 내용");
+            free(d);
+        } else {
+            printf("  [INFO] 이 볼륨은 POSIX 의미 rename 미지원(SMB 등): 열린 대상 교체 %s. 대기 노드가 leader.info를\n"
+                   "         읽는 동안 하트비트가 일시 실패(FQ_ERR)할 수 있다 — 리더십은 안전(DESIGN.md §0 SMB 실측)\n",
+                   rrc == FQ_OK ? "성공" : "실패");
+        }
+        fq_fs_unlink(tgt); fq_fs_unlink(tmp);
+
+        /* 원본을 남이 공유 삭제 없이 잠깐(5ms) 쥐고 있음: rename은 공유 위반을 짧게 재시도해 넘겨야 한다 */
+        snprintf(src, sizeof(src), "%s/w_src", dir);
+        snprintf(dst, sizeof(dst), "%s/w_dst", dir);
+        fq_fs_unlink(src); fq_fs_unlink(dst);
+        CHECK(fq_fs_write_sync(src, "s", 1) == FQ_OK, "원본 작성");
+        HANDLE hold = CreateFileA(src, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+        thread_t th;
+        int started = hold != INVALID_HANDLE_VALUE && thread_start(&th, close_later, &hold) == 0;
+        CHECK(started, "원본을 공유 삭제 없이 열고 5ms 뒤 닫는 스레드");
+        CHECK(fq_fs_rename(src, dst) == FQ_OK, "잠깐 쥔 원본도 fq_fs_rename이 재시도로 옮김");
+        if (started) thread_join(th);
+        CHECK(fq_fs_exists(dst) == 1 && fq_fs_exists(src) == 0, "  ... 옮겨짐");
+        fq_fs_unlink(dst);
+    }
+#endif
 
     printf("\n== 결과: %s (%d 실패) ==\n", fails ? "FAIL" : "PASS", fails);
     return fails ? 1 : 0;

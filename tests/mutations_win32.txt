@@ -1,0 +1,10 @@
+# Win32 전용 변이 목록: MUT_PLAT=win32 bash tests/mutate.sh 로 돌린다(형식은 tests/mutations.txt와 같다).
+# fq_fs_win32.c는 기본(POSIX) 모드에서 컴파일되지 않으므로 이 방어들은 여기서만 검사된다.
+M16 긴 루트 검사 제거(네이티브 test_consume [10]이 잡아야 함)#src/fq_queue.c#if (!fq_fs_path_fits(probe, 1 + 65 + strlen(q->node_id) + (255 - FQ_MSG_NAME_MAX))) {#if (0) {
+M10 leader.info ENOENT 재시도 제거(네이티브 NTFS는 POSIX 의미 교체라 읽는 쪽이 ENOENT를 보지 않음 → 놓침이 정상. POSIX 모드 test_atomicity가 잡음)#src/fq_util.c#for (int i = 0; rc == FQ_ENOENT && i < FQ_REPLACE_READ_RETRIES; i++) {#for (int i = 0; 0; i++) {
+W01 leader.info 교체에 POSIX 의미 rename을 안 씀(열린 대상 교체 실패 → MoveFileEx 재시도로 떨어짐)#src/fq_fs_win32.c#ri->Flags = FQ_RENAME_REPLACE_IF_EXISTS | FQ_RENAME_POSIX_SEMANTICS;#ri->Flags = FQ_RENAME_REPLACE_IF_EXISTS;
+W02 MoveFileEx 공유 위반 재시도 제거#src/fq_fs_win32.c#if ((e != ERROR_ACCESS_DENIED && e != ERROR_SHARING_VIOLATION) || i >= FQ_RENAME_RETRIES)#if (1)
+W03 긴 경로 실패를 경합 패배(ENOENT)로 봄(9차: claim 무한 재시도)#src/fq_fs_win32.c#if (e == ERROR_FILENAME_EXCED_RANGE || !fq_fs_path_fits(src, 0) || !fq_fs_path_fits(dst, 0))#if (e == ERROR_FILENAME_EXCED_RANGE)
+W04 rename_noreplace가 "대상 존재"를 FQ_EEXIST로 구분 안 함#src/fq_fs_win32.c#if (e == ERROR_ALREADY_EXISTS || e == ERROR_FILE_EXISTS) return FQ_EEXIST;#;
+W05 읽기에 FILE_SHARE_DELETE 없음(읽는 동안 남의 rename·unlink 실패)#src/fq_fs_win32.c#FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,#FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
+W06 기록 뒤 FlushFileBuffers 생략(내구성: 전원 차단 없이는 못 잡음 → 놓침이 정상)#src/fq_fs_win32.c#if (!FlushFileBuffers(h)) return write_fail(path, h);#;

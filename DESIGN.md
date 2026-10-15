@@ -405,3 +405,7 @@ int  fq_dead_drop(fq_queue *q, const char *name);          /* 영구 삭제 */
 7. **변이 테스트** — `tests/mutate.sh`가 방어 로직(`tests/mutations.txt`)을 하나씩 끈 코드로 테스트를 돌려, 그 방어를
    검사하는 테스트가 있는지 본다. 스레드로 재현되지 않는 경합 틈은 `fq_internal.h`의 테스트 훅으로 결정적으로 만든다.
    변이로 검사할 수 없는 것: fsync 순서(전원 차단), tmp 이름의 node_id(확률적 충돌), 쓰기 실패 시 임시 파일 삭제(디스크 풀).
+   Win32 전용 방어(`fq_fs_win32.c`, Win32 경로 길이 검사)는 `MUT_PLAT=win32`로 MinGW 네이티브 빌드에서 돌린다
+   (`tests/mutations_win32.txt`). 26차에 처음 돌렸을 때 열린 `leader.info` 교체용 POSIX 의미 rename(W01)과
+   `MoveFileEx` 공유 위반 재시도(W02)를 끄고도 모든 테스트가 통과했다 — 겹침이 타이밍에 달려 있었다.
+   `test_atomicity` [7]이 다른 핸들로 연 파일을 결정적으로 만들어 이제 둘 다 잡는다.

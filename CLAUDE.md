@@ -27,6 +27,7 @@ bash tests/test_concurrency.sh ./build/fq_producer.exe ./build/fq_consumer.exe
 
 # 변이 테스트: 방어 로직(tests/mutations.txt)을 하나씩 끄고 테스트가 잡는지 (변이당 1분 안팎)
 bash tests/mutate.sh            # 결과: build/mut/result.txt, "놓침"이면 그 방어를 검사하는 테스트가 없다
+MUT_PLAT=win32 bash tests/mutate.sh   # fq_fs_win32.c 등 Win32 전용 방어(tests/mutations_win32.txt)를 MinGW 네이티브로
 ```
 
 **주의: 이 머신의 Bash 툴(git-bash)에서 띄운 Cygwin 프로그램은 크래시해도 종료 코드 0으로 끝나고 출력 버퍼도
@@ -164,7 +165,8 @@ fq_fs_posix.c / fq_fs_win32.c   (플랫폼 원자 연산 추상화)
   claim rename은 겹치지 말 것 — NTFS에서 몇 배 느려진다(`BENCHMARK.md`).
   POSIX 링크에는 `-pthread`가 필요하다(CMake는 `Threads::Threads`를 PUBLIC으로 전파).
 - 방어 로직(fencing·재검증·락 보유자 확인 등)을 추가하거나 바꾸면 `tests/mutations.txt`에 변이를 넣고
-  `tests/mutate.sh`로 그것을 끈 코드가 테스트에 걸리는지 확인할 것. 타이밍 경합이라 스레드로 재현되지 않는 틈은
+  `tests/mutate.sh`로 그것을 끈 코드가 테스트에 걸리는지 확인할 것. `fq_fs_win32.c`의 방어는 기본 모드에서 컴파일되지
+  않으므로 `tests/mutations_win32.txt`에 넣고 `MUT_PLAT=win32`로 돌린다. 타이밍 경합이라 스레드로 재현되지 않는 틈은
   `fq_internal.h`의 테스트 훅(`fq_test_hook_before_elock`, `fq_election_reclaim`)으로 결정적으로 만든다.
   스레드 생성 실패 경로는 `fq_test_par_nothreads`로 흉내 낸다.
 - 대상 스토리지가 바뀌면 `test_atomicity`를 그 스토리지에서 먼저 돌려 rename/create/lock 원자성을
