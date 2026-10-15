@@ -5,6 +5,7 @@
 # 검증 1) 다중 소비자가 동시에 떠도 Active-Passive로 단 하나만 활성, 메시지 유실 없음
 # 검증 2) 활성 소비자를 kill -9 한 뒤 다른 노드가 인수(failover)하여 잔여 메시지 회수, 유실 없음
 # 검증 3) 살아 있는 리더가 하트비트를 치는 동안 대기 노드가 리더십을 빼앗지 못함 (split-brain 없음)
+# 검증 4) 묶음 소비(FQ_EXAMPLE_BATCH)의 활성 소비자를 ack 전에 kill -9 → 묶음째 회수·재전달, 유실 없음
 #
 # At-least-once 계약: 모든 메시지가 최소 1회 소비되어야 함(유실 0). 중복은 허용.
 
@@ -106,6 +107,43 @@ T=$(total_count "$WORK/bX.log" "$WORK/bY.log")
 # 처리했지만 ack 전에 죽은 메시지는 새 리더가 다시 전달한다(at-least-once의 중복)
 [ "$T" -gt "$U" ] && pass "ack 전 메시지가 재전달됨 (총 $T > 고유 $U)" || fail "재전달 없음 (총 $T, 고유 $U): 회수가 동작하지 않았을 수 있음"
 
+echo "== [D] 묶음 소비 Failover (fq_claim_batch로 받은 묶음을 ack 전에 강제 종료) =="
+ROOT="$WORK/qD"
+N=300
+BATCH=20
+"$PRODUCER" "$ROOT" "$N" "d-" >/dev/null 2>&1
+export FQ_LEASE_MS_OVERRIDE=1500 FQ_EXAMPLE_BATCH=$BATCH
+# [B]와 같이 처리 뒤 ack 전 대기 중에 죽인다. 이번에는 묶음 전체(여러 건)가 처리됐지만 ack 전이다.
+FQ_EXAMPLE_ACK_DELAY_MS=1000 "$CONSUMER" "$ROOT" nodeP "$WORK/dP.log" 60000 2>"$WORK/dP.err" &
+PID=$!
+for _ in $(seq 1 200); do
+  if [ "$(total_count "$WORK/dP.log")" -ge 2 ] && [ "$(ls "$ROOT/inflight" 2>/dev/null | grep -c .)" -ge 2 ]; then break; fi
+  sleep 0.05
+done
+kill -9 "$PID" 2>/dev/null
+wait "$PID" 2>/dev/null
+PROCESSED_P=$(total_count "$WORK/dP.log")
+KILL_FL=$(ls "$ROOT/inflight" 2>/dev/null | grep -c . )
+echo "  nodeP 강제종료 전 처리=$PROCESSED_P, 종료 시점 inflight=$KILL_FL"
+sleep 2
+"$CONSUMER" "$ROOT" nodeQ "$WORK/dQ.log" 5000 2>"$WORK/dQ.err" &
+wait
+unset FQ_LEASE_MS_OVERRIDE FQ_EXAMPLE_BATCH
+U=$(uniq_count "$WORK/dP.log" "$WORK/dQ.log")
+T=$(total_count "$WORK/dP.log" "$WORK/dQ.log")
+LEFT_IN=$(ls "$ROOT/incoming" 2>/dev/null | grep -c . )
+LEFT_FL=$(ls "$ROOT/inflight" 2>/dev/null | grep -c . )
+DEAD=$(ls "$ROOT/dead" 2>/dev/null | grep -c . )
+echo "  발행=$N 고유소비(P+Q)=$U 총소비=$T 잔여(incoming=$LEFT_IN inflight=$LEFT_FL dead=$DEAD)"
+[ "$KILL_FL" -ge 2 ] && pass "강제 종료 시점에 묶음이 처리 중(ack 전 $KILL_FL건)" \
+  || fail "강제 종료 시점 inflight $KILL_FL건: 묶음 회수 경로를 검증하지 못함"
+[ $((U + DEAD)) -eq "$N" ] && pass "묶음 failover 후 유실 없음 (고유$U + dead$DEAD = $N)" || fail "유실 발생 ($((U + DEAD)) != $N)"
+[ "$LEFT_IN" -eq 0 ] && [ "$LEFT_FL" -eq 0 ] && pass "큐 비워짐(회수 완료)" || fail "잔여(incoming=$LEFT_IN inflight=$LEFT_FL)"
+# 중복 = 처리했지만 ack 전에 죽은 묶음. 묶음 크기를 넘으면 회수가 묶음 밖의 것까지 다시 준 것이다
+DUP=$((T - U))
+[ "$DUP" -ge 2 ] && [ "$DUP" -le "$BATCH" ] && pass "ack 전 묶음만 재전달 (중복 $DUP, 묶음 $BATCH 이하)" \
+  || fail "중복 $DUP: 2~$BATCH 이어야 함"
+
 if [ -x "$ELECTION" ]; then
   echo "== [C] 리더 선출 경합 (살아 있는 리더를 대기 노드가 빼앗지 못함) =="
   ROOT="$WORK/qC"
@@ -117,7 +155,7 @@ if [ -x "$ELECTION" ]; then
   wait "$PB"; RB=$?
   echo "  $(cat "$WORK/cA.out")"
   echo "  $(cat "$WORK/cB.out")"
-  [ "$RA" -eq 0 ] && pass "리더 A가 리더십을 한 번도 잃지 않음 (갱신 공백 < 1s)" || fail "리더 A가 리더십을 잃거나 갱신 공백이 김"
+  [ "$RA" -eq 0 ] && pass "리더 A의 갱신이 모두 성공 또는 락 대기 (상실·오류 0, 공백 < 1s)" || fail "리더 A의 갱신 상실(lost)·오류(err) 또는 긴 공백 — 위 A: 줄 참고"
   if [ "$RB" -eq 0 ]; then pass "대기 노드 B의 탈취 0회"
   elif ! grep -q "stolen=" "$WORK/cB.out"; then fail "대기 노드 B가 결과 없이 종료(rc=$RB): 실행 실패/크래시"
   else fail "대기 노드 B가 리더십을 탈취함"; fi

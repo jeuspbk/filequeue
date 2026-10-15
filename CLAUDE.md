@@ -38,7 +38,7 @@ bash tests/mutate.sh            # 결과: build/mut/result.txt, "놓침"이면 �
 (`/cygdrive/d` vs `/d`)** 때문에 ctest 자동 실행이 불안정하여 수동 실행으로 분리했다.
 스크립트 자체는 정상 동작한다. 실패하면 작업 디렉터리(프로세스별 `*.err`, 큐 상태 `q*/`)를 지우지 않고
 경로를 출력한다 — 간헐 실패는 그 디렉터리부터 볼 것(통과하면 지운다). `examples/`의 `fq_producer`/`fq_consumer`는 이 테스트의
-드라이버 겸 사용 예제다. `FQ_LEASE_MS_OVERRIDE` 환경변수로 리스를 단축해 failover를 빠르게 검증한다. [B]는 `FQ_EXAMPLE_ACK_DELAY_MS`(fq_consumer의 처리 뒤 ack 전 대기)로 "처리했지만 ack 전" 상태(1초 유지)를 만든 뒤 kill -9 하고, 회수·재전달(중복 1건)까지 확인한다 — "유실 없음"만으로는 회수가 고장 나도 통과한다.
+드라이버 겸 사용 예제다. `FQ_LEASE_MS_OVERRIDE` 환경변수로 리스를 단축해 failover를 빠르게 검증한다. [B]는 `FQ_EXAMPLE_ACK_DELAY_MS`(fq_consumer의 처리 뒤 ack 전 대기)로 "처리했지만 ack 전" 상태(1초 유지)를 만든 뒤 kill -9 하고, 회수·재전달(중복 1건)까지 확인한다 — "유실 없음"만으로는 회수가 고장 나도 통과한다. [D]는 같은 일을 묶음 소비(`FQ_EXAMPLE_BATCH`=20, `fq_claim_batch`+`fq_ack_batch`)로 하고 중복이 죽은 묶음 크기 이하인지 본다. [C]는 loopback SMB에서 FAIL이 정상이다(교체 실패가 `err`로 잡힘, `DESIGN.md` §0) — `lost`·`stolen`이 0인지 볼 것.
 
 빌드 파일(CMakeLists.txt)은 플랫폼에 따라 FS 구현을 자동 선택한다:
 - 네이티브 Windows(MSVC) → `src/fq_fs_win32.c`

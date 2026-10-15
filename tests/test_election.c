@@ -31,7 +31,7 @@ int main(int argc, char **argv)
     fq_queue *q = NULL;
     if (fq_open(root, role, &q) != FQ_OK) { fprintf(stderr, "fq_open 실패\n"); return 2; }
     fq_lease l; memset(&l, 0, sizeof l);
-    long tries = 0, ok = 0, lost = 0, busy = 0;
+    long tries = 0, ok = 0, lost = 0, busy = 0, err = 0;
 
     if (strcmp(role, "A") == 0) {
         if (fq_acquire_leadership(q, &l) != FQ_OK) { fprintf(stderr, "A: acquire 실패\n"); return 2; }
@@ -46,13 +46,16 @@ int main(int argc, char **argv)
             uint64_t now = fq_now_wall_ms();
             if (rc == FQ_OK) { ok++; last_ok = now; }
             else if (rc == FQ_ELOCKED) busy++;
-            else lost++;                                 /* ENOLEADER(상실) 또는 오류 */
+            else if (rc == FQ_ENOLEADER) lost++;         /* 리더십 상실(split-brain 위험) */
+            else err++;                                  /* 일시 오류(leader.info 교체 실패 등) */
             if (now - last_ok > max_gap) max_gap = now - last_ok;
         }
-        printf("A: token=%llu renew=%ld ok=%ld busy=%ld lost=%ld max_gap=%llums\n",
-               (unsigned long long)l.token, tries, ok, busy, lost, (unsigned long long)max_gap);
+        printf("A: token=%llu renew=%ld ok=%ld busy=%ld lost=%ld err=%ld max_gap=%llums\n",
+               (unsigned long long)l.token, tries, ok, busy, lost, err, (unsigned long long)max_gap);
         fq_close(q);
-        return (lost == 0 && max_gap < 1000) ? 0 : 1;
+        /* err도 실패로 친다: 로컬 FS에서는 0이어야 한다. loopback SMB는 대기 노드가 쉬지 않고 읽으면
+         * 교체가 자주 실패해 err > 0이 정상이다(DESIGN.md §0 SMB 실측) — 그때는 lost·B의 stolen을 볼 것. */
+        return (lost == 0 && err == 0 && max_gap < 1000) ? 0 : 1;
     }
 
     sleep_ms(200);                         /* A가 먼저 리더가 되도록 */

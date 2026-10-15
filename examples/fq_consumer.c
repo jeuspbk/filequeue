@@ -7,7 +7,8 @@
  *   - run_ms 동안 동작 후 종료. 리더가 아니면(대기) 짧게 쉬며 재시도.
  *
  * 테스트에서 FQ_LEASE_MS_OVERRIDE 환경변수로 리스를 단축할 수 있다. FQ_EXAMPLE_ACK_DELAY_MS는 처리 뒤 ack 전
- * 대기(ms)로, failover 테스트가 처리 중인 상태에서 강제 종료하는 데 쓴다.
+ * 대기(ms)로, failover 테스트가 처리 중인 상태에서 강제 종료하는 데 쓴다. FQ_EXAMPLE_BATCH=N(>1)이면
+ * fq_claim_batch로 최대 N건씩 받아 모두 처리한 뒤 fq_ack_batch로 한 번에 ack한다.
  */
 #include "fq.h"
 #include "fq_internal.h"   /* fq_now_mono_ms, fq_now_wall_ms, fq_lease_ms */
@@ -38,6 +39,10 @@ int main(int argc, char **argv)
      * 강제 종료해 회수·재전달 경로를 확실히 밟게 한다. */
     const char *dly = getenv("FQ_EXAMPLE_ACK_DELAY_MS");
     int ack_delay = dly ? atoi(dly) : 0;
+    const char *bat = getenv("FQ_EXAMPLE_BATCH");
+    size_t batch = bat && atoi(bat) > 1 ? (size_t)atoi(bat) : 1;
+    fq_msg **ms = (fq_msg **)malloc(batch * sizeof(*ms));
+    if (!ms) { fprintf(stderr, "oom\n"); return 1; }
 
     fq_queue *q = NULL;
     if (fq_open(root, node_id, &q) != FQ_OK) { fprintf(stderr, "fq_open 실패\n"); return 1; }
@@ -97,6 +102,22 @@ int main(int argc, char **argv)
             }
         }
 
+        /* 묶음: claim → 모두 처리 → 한 번에 ack (처리+ack 전 대기가 리스 안이어야 한다) */
+        if (batch > 1) {
+            size_t got = 0;
+            int crc = fq_claim_batch(q, &lease, ms, batch, &got);
+            if (crc != FQ_OK) { sleep_ms(15); continue; }   /* EEMPTY 포함 */
+            for (size_t i = 0; i < got; i++) {
+                fwrite(ms[i]->data, 1, ms[i]->len, log);
+                fputc('\n', log);
+            }
+            fflush(log);
+            if (ack_delay > 0) sleep_ms(ack_delay);
+            fq_ack_batch(q, ms, got);
+            processed += (long)got;
+            continue;
+        }
+
         /* claim → 처리 → ack */
         fq_msg *m = NULL;
         int crc = fq_claim(q, &lease, &m);
@@ -110,6 +131,7 @@ int main(int argc, char **argv)
     }
 
     fclose(log);
+    free(ms);
     /* 리더 구간 끝 = 반납 직전. 반납 뒤에야 다른 노드가 인수하므로 정상이면 구간이 겹치지 않는다. */
     uint64_t lead_to = fq_now_wall_ms();
     if (have_lead) fq_release_leadership(q, &lease);   /* 대기 노드가 리스 만료를 기다리지 않게 */

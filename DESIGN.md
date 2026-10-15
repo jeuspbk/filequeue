@@ -52,12 +52,19 @@
    - **네이티브 Win32 빌드 + SMB**: 단위·failover 테스트 통과, 읽는 쪽 ENOENT 0회, 탈취 0회. 다만 SMB에서는
      핸들 기반 POSIX rename이 지원되지 않아 `MoveFileEx`로 대신하며, 대기 노드가 쉬지 않고 읽으면 교체의
      15~25%가 재시도를 다 쓰고 실패한다(하트비트 `FQ_ERR`). `fq_consume`은 이를 일시 오류로 견디지만
-     (리스 안에서 100ms 뒤 재시도), 대기 노드의 폴링 주기를 너무 짧게 잡지 말 것.
+     (리스 안에서 100ms 뒤 재시도), 대기 노드의 폴링 주기를 너무 짧게 잡지 말 것. 2026-10-15 재측정에서는
+     35~50%(3초에 갱신 20여 회 중 7~10회 `FQ_ERR`, 최대 갱신 공백 0.4~1.0초, 상실·탈취 0)였고 19차 이전 코드도
+     같았다(환경 차이). 그래서 `test_concurrency.sh` [C]는 SMB에서 FAIL이 정상이다 — `test_election`이 출력하는
+     `lost`(리더십 상실)와 B의 `stolen`이 0인지 볼 것(`err`는 일시 오류).
    - **교차 OS 실측 (Windows 네이티브 노드 `D:\` ↔ WSL2 Linux 노드 `/mnt/d`(9P), 2026-10):** 커널이 다른
      두 클라이언트가 같은 큐를 공유. Linux 빌드(`renameat2` 경로)는 ext4·9P 모두 단위 테스트 통과(9P는
      교체 순간 ENOENT를 보이나 재시도로 흡수). 선출 경합 양방향 4회: 리더 하트비트 상실 0, 탈취 0.
      failover(활성 노드 SIGKILL/강제 종료 → 다른 OS 노드 인수) 양방향: 유실 0, inflight 잔여 0
      (죽는 순간 처리 중이던 1건 중복 재전달 = at-least-once).
+     묶음 소비(2026-10-15, `fq_claim_batch` 20건씩, 처리 뒤 ack 전에 강제 종료) 양방향 2회씩: 유실 0, inflight
+     잔여 0, 중복 = 죽은 노드가 처리 중이던 묶음 20건 그대로. 두 OS 노드가 동시에 묶음 소비 → Win32 쪽 정상 종료
+     → Linux 쪽 인계: 3,000건 유실·중복 0, 리더 구간 겹침 0. loopback SMB(네이티브 Win32)에서도 `test_batch`와
+     [D] 묶음 failover 통과.
    - SMB 클라이언트 캐시(FileInfoCache·FileNotFoundCache·DirectoryCache, 기본 5~10초)는 다른 머신의 변경을
      늦게 보이게 할 수 있다. loopback에서는 재현되지 않았다(~15ms 안에 보임). 실제 다중 머신 배치에서는
      `test_election`을 두 머신에서 돌려 확인할 것.
