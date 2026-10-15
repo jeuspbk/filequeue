@@ -116,6 +116,8 @@ static DWORD WINAPI par_main(LPVOID p) { par_task *t = (par_task *)p; t->fn(t->a
 static void *par_main(void *p) { par_task *t = (par_task *)p; t->fn(t->arg, t->k); return NULL; }
 #endif
 
+int fq_test_par_nothreads = 0;   /* 테스트 전용(fq_internal.h) */
+
 void fq_run_parallel(size_t n, void (*fn)(void *arg, size_t k), void *arg)
 {
     if (n > FQ_PAR_MAX) n = FQ_PAR_MAX;
@@ -128,6 +130,7 @@ void fq_run_parallel(size_t n, void (*fn)(void *arg, size_t k), void *arg)
 #endif
     for (size_t k = 1; k < n; k++) {
         tasks[k].fn = fn; tasks[k].arg = arg; tasks[k].k = k;
+        if (fq_test_par_nothreads) continue;
 #if defined(_WIN32) && !defined(__CYGWIN__)
         th[k] = CreateThread(NULL, 0, par_main, &tasks[k], 0, NULL);
         started[k] = th[k] != NULL;

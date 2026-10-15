@@ -111,6 +111,8 @@ int      fq_acquire_lease(fq_queue *q, fq_lease *lease, int same_node);
  * 그 틈에 다른 노드가 인수를 마치는 경합은 실제로는 스케줄링 지연이 있어야 열려 스레드로는 재현되지 않는다.
  * 테스트가 이 틈에 다른 핸들의 인수를 끼워 넣어 락 안 재검증을 결정적으로 검사한다. 운영 코드는 건드리지 말 것. */
 extern void (*fq_test_hook_before_elock)(fq_queue *q);
+/* 테스트 훅: 0이 아니면 fq_run_parallel이 스레드를 만들지 않는다(생성 실패를 흉내 냄 → 호출 스레드가 대신 한다). */
+extern int fq_test_par_nothreads;
 
 /* ---- 실패한 inflight 재큐잉 (fq_queue.c) ----
  * inflight/<name>을 실패한 시도 한 번으로 처리: attempt+1로 incoming/<base>.a<N>, 한도에 닿으면

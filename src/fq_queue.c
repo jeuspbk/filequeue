@@ -120,10 +120,9 @@ static uint64_t msg_clock_ms(fq_queue *q)
 /* 최종 메시지명: <epoch_ms>-<seq>-<producer>-<id>[.<stream>].msg
  * 앞쪽 시간+seq 로 best-effort FIFO 정렬. 시각은 msg_clock_ms (FS 시각 기준 보정값).
  * seq는 10자리 고정폭: 같은 ms 안의 순서를 문자열 정렬로 보존한다(uint32 전 범위). */
-static void new_msg_name(fq_queue *q, const char *id, const char *stream_key, char *msg_name, size_t n)
+static void format_msg_name(const fq_queue *q, uint64_t now, uint32_t seq, const char *id, const char *stream_key,
+                            char *msg_name, size_t n)
 {
-    uint64_t now = msg_clock_ms(q);
-    uint32_t seq = ++q->seq;
     if (stream_key && stream_key[0])
         snprintf(msg_name, n, "%016llu-%010u-%s-%s.%s.msg",
                  (unsigned long long)now, seq, q->node_id, id, stream_key);
@@ -132,8 +131,24 @@ static void new_msg_name(fq_queue *q, const char *id, const char *stream_key, ch
                  (unsigned long long)now, seq, q->node_id, id);
 }
 
+static void new_msg_name(fq_queue *q, const char *id, const char *stream_key, char *msg_name, size_t n)
+{
+    uint64_t now = msg_clock_ms(q);
+    format_msg_name(q, now, ++q->seq, id, stream_key, msg_name, n);
+}
+
 static int ordered_name(fq_queue *q, const char *id, const char *stream_key, const fq_order *o,
                         char *name, size_t n);
+
+/* 이름·경로 한도: claim·재시도 접미사를 붙여도 들어가야 한다. 맞으면 msg_path에 incoming/ 경로 */
+static int name_fits(const fq_queue *q, const char *msg_name, char *msg_path, size_t n)
+{
+    if (strlen(msg_name) > FQ_MSG_NAME_MAX) return FQ_EINVAL;
+    fq_path(msg_path, n, q->root, FQ_DIR_INCOMING, msg_name);
+    /* 경로 전체 한도(네이티브 Win32 260자)도 같은 이유로 접미사까지 붙여 본다("inflight"는 "incoming"과 길이가 같다) */
+    if (!fq_fs_path_fits(msg_path, 255 - FQ_MSG_NAME_MAX)) return FQ_EINVAL;
+    return FQ_OK;
+}
 
 /* incoming/ 안의 새 메시지 경로. 순서 지정(o)의 대상이 없으면 FQ_EEMPTY, 이름이 너무 길면 FQ_EINVAL. */
 static int incoming_path(fq_queue *q, const char *id, const char *stream_key, const fq_order *o,
@@ -142,11 +157,7 @@ static int incoming_path(fq_queue *q, const char *id, const char *stream_key, co
     char msg_name[512];
     int rc = ordered_name(q, id, stream_key, o, msg_name, sizeof(msg_name));
     if (rc != FQ_OK) return rc;
-    if (strlen(msg_name) > FQ_MSG_NAME_MAX) return FQ_EINVAL;
-    fq_path(msg_path, n, q->root, FQ_DIR_INCOMING, msg_name);
-    /* 경로 전체 한도(네이티브 Win32 260자)도 같은 이유로 접미사까지 붙여 본다("inflight"는 "incoming"과 길이가 같다) */
-    if (!fq_fs_path_fits(msg_path, 255 - FQ_MSG_NAME_MAX)) return FQ_EINVAL;
-    return FQ_OK;
+    return name_fits(q, msg_name, msg_path, n);
 }
 
 static void fsync_incoming(fq_queue *q)
@@ -212,57 +223,94 @@ static void batch_write(void *arg, size_t k)
         j->e[i].rc = fq_fs_write_sync(j->e[i].tmp, j->e[i].data, j->e[i].len);
 }
 
+/* 꼬리 발행 이름이 한도 안인가. 시각·seq·id는 고정폭이라 길이는 node_id와 stream_key로만 정해진다 */
+static int batch_key_fits(const fq_queue *q, const char *stream_key)
+{
+    char id[64], name[512], path[1408];
+    fq_gen_id(id, sizeof(id));
+    format_msg_name(q, 0, 0, id, stream_key, name, sizeof(name));
+    return name_fits(q, name, path, sizeof(path));
+}
+
+/* 청크 하나(m <= FQ_BATCH_CHUNK건): 이름 → 기록(병렬) → 항목 순서대로 rename → 디렉터리 fsync.
+ * 기록이 하나라도 실패하면 이 청크의 tmp를 모두 지우고 0건. *renamed = 발행한 앞쪽 건수. */
+static int batch_chunk(fq_queue *q, const fq_item *items, size_t m, batch_ent *e, size_t *renamed)
+{
+    *renamed = 0;
+    /* 1) 이름: 기록 직전에 항목 순서대로(시각은 단조, 같은 ms면 seq가 는다). 이름의 시각과 실제로 보이는
+     *    시각의 차이가 청크 하나의 기록 시간으로 묶인다 */
+    for (size_t i = 0; i < m; i++) {
+        char id[64], tmp_name[192];
+        fq_gen_id(id, sizeof(id));
+        int rc = incoming_path(q, id, items[i].stream_key, NULL, e[i].msg, sizeof(e[i].msg));
+        if (rc != FQ_OK) return rc;                      /* 사전 검사를 통과했으니 오지 않는다 */
+        snprintf(tmp_name, sizeof(tmp_name), "%s-%s.tmp", q->node_id, id);
+        fq_path(e[i].tmp, sizeof(e[i].tmp), q->root, FQ_DIR_TMP, tmp_name);
+        e[i].data = items[i].data;
+        e[i].len  = items[i].len;
+        e[i].rc   = FQ_ERR;          /* 아무도 기록하지 않은 항목이 성공으로 보이지 않게 */
+    }
+
+    /* 2) 기록 + fsync를 겹쳐서. 하나라도 실패하면 이 청크의 tmp를 모두 지우고 끝(큐는 그대로) */
+    batch_job job = { e, m, m < FQ_BATCH_THREADS ? m : FQ_BATCH_THREADS };
+    fq_run_parallel(job.step, batch_write, &job);
+    int err = FQ_OK;
+    for (size_t i = 0; i < m; i++)
+        if (e[i].rc != FQ_OK) { err = e[i].rc; break; }   /* FQ_ENOSPC 또는 FQ_ERR */
+    if (err != FQ_OK) {
+        for (size_t i = 0; i < m; i++)
+            if (e[i].rc == FQ_OK) fq_fs_unlink(e[i].tmp);  /* 실패한 것은 fq_fs_write_sync가 이미 지웠다 */
+        return err;
+    }
+
+    /* 3) 항목 순서대로 발행. 도중 실패하면 앞의 것만 발행된 채 나머지 tmp를 지운다 */
+    size_t k = 0;
+    int rc = FQ_OK;
+    for (; k < m; k++) {
+        rc = fq_fs_rename(e[k].tmp, e[k].msg);
+        if (rc != FQ_OK) break;
+    }
+    for (size_t i = k; i < m; i++) fq_fs_unlink(e[i].tmp);
+
+    /* 4) 디렉터리 영속화 한 번. 다음 청크로 가기 전에: 오류로 끝나도 *published건은 영속돼 있어야 한다 */
+    if (k) fsync_incoming(q);
+    *renamed = k;
+    return rc;
+}
+
 int fq_publish_batch(fq_queue *q, const fq_item *items, size_t n, size_t *published)
 {
     if (published) *published = 0;
     if (n == 0) return FQ_OK;
     if (!items) return FQ_EINVAL;
-    for (size_t i = 0; i < n; i++)
-        if (items[i].stream_key && items[i].stream_key[0] &&
-            !fq_valid_ident(items[i].stream_key, FQ_STREAM_KEY_MAX))
-            return FQ_EINVAL;
 
-    batch_ent *e = (batch_ent *)calloc(n, sizeof(*e));
-    if (!e) return FQ_ERR;
-
-    /* 1) 이름: 항목 순서대로 만들어 정렬 순서 = 항목 순서(시각은 단조, 같은 ms면 seq가 는다) */
+    /* 모든 항목을 먼저 검사: 어긋나면 아무것도 쓰지 않는다(뒤 청크에서 발견하면 앞 청크가 이미 발행됐다).
+     * 같은 stream_key가 이어지면 한 번만 본다 */
+    const char *seen = NULL;
+    int have_seen = 0;
     for (size_t i = 0; i < n; i++) {
-        char id[64], tmp_name[192];
-        fq_gen_id(id, sizeof(id));
-        int rc = incoming_path(q, id, items[i].stream_key, NULL, e[i].msg, sizeof(e[i].msg));
-        if (rc != FQ_OK) { free(e); return rc; }        /* 이름 길이: 아무것도 쓰지 않았다 */
-        snprintf(tmp_name, sizeof(tmp_name), "%s-%s.tmp", q->node_id, id);
-        fq_path(e[i].tmp, sizeof(e[i].tmp), q->root, FQ_DIR_TMP, tmp_name);
-        e[i].data = items[i].data;
-        e[i].len  = items[i].len;
+        const char *key = (items[i].stream_key && items[i].stream_key[0]) ? items[i].stream_key : NULL;
+        if (have_seen && (key == seen || (key && seen && strcmp(key, seen) == 0))) continue;
+        if (key && !fq_valid_ident(key, FQ_STREAM_KEY_MAX)) return FQ_EINVAL;
+        int vrc = batch_key_fits(q, key);
+        if (vrc != FQ_OK) return vrc;
+        seen = key;
+        have_seen = 1;
     }
 
-    /* 2) 기록 + fsync를 겹쳐서. 하나라도 실패하면 이번 배치의 tmp를 모두 지우고 끝(큐는 그대로) */
-    batch_job job = { e, n, n < FQ_BATCH_THREADS ? n : FQ_BATCH_THREADS };
-    fq_run_parallel(job.step, batch_write, &job);
-    int err = FQ_OK;
-    for (size_t i = 0; i < n; i++)
-        if (e[i].rc != FQ_OK) { err = e[i].rc; break; }   /* FQ_ENOSPC 또는 FQ_ERR */
-    if (err != FQ_OK) {
-        for (size_t i = 0; i < n; i++)
-            if (e[i].rc == FQ_OK) fq_fs_unlink(e[i].tmp);  /* 실패한 것은 fq_fs_write_sync가 이미 지웠다 */
-        free(e);
-        return err;
-    }
-
-    /* 3) 항목 순서대로 발행. 도중 실패하면 앞의 것만 발행된 채 나머지 tmp를 지운다 */
+    /* FQ_BATCH_CHUNK건씩: 메모리와, tmp 파일이 rename을 기다리는 시간(fq_gc의 나이 기준)을 청크 하나로 묶는다 */
+    size_t cap = n < FQ_BATCH_CHUNK ? n : FQ_BATCH_CHUNK;
+    batch_ent *e = (batch_ent *)calloc(cap, sizeof(*e));
+    if (!e) return FQ_ERR;
     size_t done = 0;
     int rc = FQ_OK;
-    for (; done < n; done++) {
-        rc = fq_fs_rename(e[done].tmp, e[done].msg);
-        if (rc != FQ_OK) break;
+    while (done < n && rc == FQ_OK) {
+        size_t m = n - done < cap ? n - done : cap, k = 0;
+        rc = batch_chunk(q, items + done, m, e, &k);
+        done += k;
     }
-    for (size_t i = done; i < n; i++) fq_fs_unlink(e[i].tmp);
-
-    /* 4) 디렉터리 영속화 한 번 */
-    if (done) fsync_incoming(q);
-    if (published) *published = done;
     free(e);
+    if (published) *published = done;
     return rc;
 }
 

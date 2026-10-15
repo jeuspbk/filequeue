@@ -1,4 +1,5 @@
-/* test_batch.c - fq_publish_batch: 순서, 검증 실패 시 아무것도 안 씀, 기록 실패 시 큐 그대로, 잔재 없음 */
+/* test_batch.c - fq_publish_batch: 순서, 검증 실패 시 아무것도 안 씀, 기록 실패 시 큐 그대로, 잔재 없음,
+ *                청크 경계(오류면 앞쪽 *published건만), rename 실패, 스레드 없이 */
 #include "fq.h"
 #include "fq_fs.h"
 #include "fq_internal.h"   /* fq_path */
@@ -145,6 +146,104 @@ int main(int argc, char **argv)
         CHECK(rc != FQ_OK && pub == 0, "넷째만 실패: 오류, 0건");
         CHECK(count_dir(q, FQ_DIR_INCOMING) == 0, "  ... 성공한 다섯도 발행되지 않음");
         CHECK(count_dir(q, FQ_DIR_TMP) == 0, "  ... tmp/에 잔재 없음 (성공한 것의 tmp도 지움)");
+    }
+
+    printf("[6] 둘째 청크에서 기록이 실패하면 첫 청크만 발행 (앞쪽 *published건, 그 뒤는 없음)\n");
+    {
+        enum { N = FQ_BATCH_CHUNK * 2 + 10, BAD = FQ_BATCH_CHUNK + 3 };
+        static char pay[N][12];
+        static fq_item it[N];
+        for (int i = 0; i < N; i++) {
+            snprintf(pay[i], sizeof(pay[i]), "%04d", i);
+            it[i].data = pay[i];
+            it[i].len = 4;
+            it[i].stream_key = NULL;
+        }
+        it[BAD].data = NULL;
+        it[BAD].len = 16;                                 /* 결함 주입: 이 항목의 기록만 실패 */
+        size_t pub = 99;
+        int rc = fq_publish_batch(q, it, N, &pub);
+        CHECK(rc != FQ_OK && pub == FQ_BATCH_CHUNK, "오류, *published = 첫 청크");
+        CHECK(count_dir(q, FQ_DIR_INCOMING) == FQ_BATCH_CHUNK, "  ... incoming/에 첫 청크만");
+        CHECK(count_dir(q, FQ_DIR_TMP) == 0, "  ... tmp/에 잔재 없음");
+        int ok = 1, i = 0;
+        while (fq_consume(q, &m) == FQ_OK) {
+            char want[12];
+            snprintf(want, sizeof(want), "%04d", i);
+            if (m->len != 4 || memcmp(m->data, want, 4) != 0) ok = 0;
+            fq_ack(q, m);
+            i++;
+        }
+        CHECK(ok && i == FQ_BATCH_CHUNK, "  ... 앞에서부터 순서대로");
+    }
+
+    printf("[7] 마지막 청크의 항목이 검사에 어긋나도 아무것도 쓰지 않음\n");
+    {
+        char longkey[128];
+        memset(longkey, 'k', 127);
+        longkey[127] = '\0';
+        char nid[64];
+        memset(nid, 'n', 63);
+        nid[63] = '\0';
+        fq_queue *ql = NULL;
+        if (fq_open(root, nid, &ql) == FQ_OK) {
+            enum { N = FQ_BATCH_CHUNK + 10 };
+            static fq_item it[N];
+            for (int i = 0; i < N; i++) { it[i].data = "v"; it[i].len = 1; it[i].stream_key = "k1"; }
+            it[N - 1].stream_key = longkey;               /* 이 node_id로는 이름이 claim 한도를 넘음 */
+            size_t pub = 99;
+            CHECK(fq_publish_batch(ql, it, N, &pub) == FQ_EINVAL && pub == 0, "마지막 항목 이름이 너무 김: FQ_EINVAL, 0건");
+            CHECK(count_dir(q, FQ_DIR_INCOMING) == 0 && count_dir(q, FQ_DIR_TMP) == 0, "  ... 첫 청크도 쓰지 않음");
+            it[N - 1].stream_key = "bad key";
+            CHECK(fq_publish_batch(ql, it, N, &pub) == FQ_EINVAL && pub == 0, "마지막 항목 stream_key가 잘못됨: FQ_EINVAL, 0건");
+            CHECK(count_dir(q, FQ_DIR_INCOMING) == 0 && count_dir(q, FQ_DIR_TMP) == 0, "  ... 아무것도 쓰지 않음");
+            fq_close(ql);
+        } else {
+            CHECK(0, "긴 node_id로 fq_open");
+        }
+    }
+
+    printf("[8] rename이 실패하면 남은 tmp를 지운다\n");
+    {
+        char idir[1280], moved[1300];
+        fq_path(idir, sizeof(idir), q->root, FQ_DIR_INCOMING, NULL);
+        snprintf(moved, sizeof(moved), "%s.away", idir);
+        CHECK(fq_fs_rename(idir, moved) == FQ_OK, "incoming/ 치움");
+        fq_item it[5] = { { "r1", 2, NULL }, { "r2", 2, NULL }, { "r3", 2, NULL }, { "r4", 2, NULL }, { "r5", 2, NULL } };
+        size_t pub = 99;
+        int rc = fq_publish_batch(q, it, 5, &pub);
+        CHECK(rc != FQ_OK && pub == 0, "rename 실패: 오류, 0건");
+        CHECK(count_dir(q, FQ_DIR_TMP) == 0, "  ... tmp/에 잔재 없음");
+        CHECK(fq_fs_rename(moved, idir) == FQ_OK, "incoming/ 되돌림");
+        CHECK(count_dir(q, FQ_DIR_INCOMING) == 0, "  ... incoming/ 그대로");
+    }
+
+    printf("[9] 스레드를 만들 수 없어도 호출 스레드가 모두 기록\n");
+    {
+        enum { N = 50 };
+        static char pay[N][12];
+        static fq_item it[N];
+        for (int i = 0; i < N; i++) {
+            snprintf(pay[i], sizeof(pay[i]), "%02d", i);
+            it[i].data = pay[i];
+            it[i].len = 2;
+            it[i].stream_key = NULL;
+        }
+        fq_test_par_nothreads = 1;
+        size_t pub = 0;
+        int rc = fq_publish_batch(q, it, N, &pub);
+        fq_test_par_nothreads = 0;
+        CHECK(rc == FQ_OK && pub == N, "50건");
+        int ok = 1, i = 0;
+        while (fq_consume(q, &m) == FQ_OK) {
+            char want[12];
+            snprintf(want, sizeof(want), "%02d", i);
+            if (m->len != 2 || memcmp(m->data, want, 2) != 0) ok = 0;
+            fq_ack(q, m);
+            i++;
+        }
+        CHECK(ok && i == N, "  ... 순서대로 50건");
+        CHECK(count_dir(q, FQ_DIR_TMP) == 0, "  ... tmp/에 잔재 없음");
     }
 
     fq_close(q);

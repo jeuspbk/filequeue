@@ -82,13 +82,21 @@ typedef struct { const void *data; size_t len; const char *stream_key; } fq_item
 ```
 
 1. 모든 항목의 `stream_key`·이름 길이를 먼저 검사한다 — 어긋나면 `FQ_EINVAL`, 아무것도 쓰지 않는다.
-2. 모두 `tmp/`에 기록 + fsync. 내부 스레드(최대 `FQ_BATCH_THREADS` = 8)로 겹친다. **하나라도 실패하면 이번 배치의
-   tmp를 모두 지우고 그 오류를 돌려준다**(`*published = 0`, 큐는 그대로).
+
+그다음 `FQ_BATCH_CHUNK`(= 256)건씩 차례로:
+
+2. `tmp/`에 기록 + fsync. 내부 스레드(최대 `FQ_BATCH_THREADS` = 8)로 겹친다. **하나라도 실패하면 이 청크의
+   tmp를 모두 지우고 그 오류를 돌려준다**(이 청크는 하나도 발행되지 않음).
 3. 항목 순서대로 `incoming/`으로 rename, 4. 디렉터리 fsync 한 번.
 
-내구성은 `fq_publish`와 같다: `FQ_OK`는 모든 항목이 영속된 뒤에만 돌아온다. 3단계 도중 오류면 앞의 `*published`건만
-발행된 채 오류를 돌려주고, 3단계 도중 크래시하면 앞쪽 일부만 발행됐을 수 있다(`fq_publish`를 n번 부르다 죽은 것과 같다.
+내구성은 `fq_publish`와 같다: `FQ_OK`는 모든 항목이 영속된 뒤에만 돌아온다. **오류면 항상 앞에서부터 `*published`건만
+발행(영속)돼 있고 그 뒤는 하나도 없다** — 이어서 보낼 때는 `items + *published`부터. 256건 이하에서 기록이 실패하면
+`*published = 0`. 도중 크래시하면 앞쪽 일부만 발행됐을 수 있다(`fq_publish`를 n번 부르다 죽은 것과 같다.
 남은 tmp는 `fq_gc`가 정리). 재시도하면 이미 발행된 것은 중복된다(at-least-once).
+
+청크로 나누는 이유: 메모리를 n에 비례해 잡지 않고, tmp 파일이 rename을 기다리는 시간과 이름의 시각이 실제보다
+앞서는 정도를 청크 하나의 기록 시간(1초 미만)으로 묶는다. 한 번에 모두 기록하면 10만 건 배치는 기록에 수 분이 걸려
+다른 노드의 `fq_gc`가 아직 발행되지 않은 tmp를 지울 수 있었다.
 
 이득은 저장소에 따라 크게 다르다(1 KB, 100건씩, `BENCHMARK.md`): Linux ext4 약 7.6배, 네이티브 Win32(NTFS) 약 2.4배,
 Cygwin(NTFS) 약 1.3배. Linux는 겹친 fsync를 저널 커밋 하나로 묶어 주고, NTFS는 새로 쓴 파일을 닫는 비용이 커서 덜 준다.

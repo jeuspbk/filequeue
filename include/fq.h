@@ -78,14 +78,19 @@ int  fq_publish(fq_queue *q, const void *data, size_t len, const char *stream_ke
 /* ---- 배치 발행 ----
  * fq_publish를 n번 하는 것과 같은 결과(꼬리에, 항목 순서대로)를 더 적은 대기로 낸다:
  *   1) 모든 항목의 stream_key·이름 길이를 먼저 검사(어긋나면 FQ_EINVAL, 아무것도 쓰지 않음)
- *   2) 모두 tmp/에 기록+fsync — 내부 스레드(최대 FQ_BATCH_THREADS)로 겹친다. 하나라도 실패하면 이번 배치의
- *      tmp를 모두 지우고 그 오류를 돌려준다(*published = 0, 큐는 그대로)
+ *   그다음 FQ_BATCH_CHUNK건씩 차례로:
+ *   2) tmp/에 기록+fsync — 내부 스레드(최대 FQ_BATCH_THREADS)로 겹친다. 하나라도 실패하면 이 청크의
+ *      tmp를 모두 지우고 그 오류를 돌려준다(이 청크는 하나도 발행되지 않음)
  *   3) 항목 순서대로 incoming/으로 rename, 4) 디렉터리 fsync 한 번
- * 내구성은 fq_publish와 같다: FQ_OK는 모든 항목이 영속된 뒤에만 돌려준다. 3) 도중 오류면 앞의 *published건만
- * 발행된 채 오류를 돌려준다(나머지 tmp는 지운다). 3) 도중 크래시하면 앞쪽 일부만 발행됐을 수 있다 — fq_publish를
- * n번 부르다 죽은 것과 같고, 남은 tmp는 fq_gc가 정리한다. 재시도하면 이미 발행된 것은 중복된다(at-least-once).
- * 이득은 저장소에 따라 다르다(BENCHMARK.md): Linux ext4는 fsync가 겹쳐 수 배, Windows NTFS는 파일 닫기 비용이
- * 커서 15~20% 안팎. published는 NULL이어도 된다. 꼬리 발행만 지원(순서 지정은 fq_publish_ex). */
+ * 내구성은 fq_publish와 같다: FQ_OK는 모든 항목이 영속된 뒤에만 돌려준다. 오류면 항상 앞에서부터 *published건만
+ * 발행(영속)돼 있고 그 뒤는 하나도 없다 — 이어서 보낼 때는 items + *published부터. n <= FQ_BATCH_CHUNK에서
+ * 기록 실패면 *published = 0. 도중 크래시하면 앞쪽 일부만 발행됐을 수 있다 — fq_publish를 n번 부르다 죽은 것과
+ * 같고, 남은 tmp는 fq_gc가 정리한다. 재시도하면 이미 발행된 것은 중복된다(at-least-once).
+ * 청크로 나누는 이유: 메모리를 n에 비례해 잡지 않고, tmp 파일이 rename을 기다리는 시간(fq_gc의 나이 판정 대상)과
+ * 이름의 시각이 실제보다 앞서는 정도를 청크 하나의 기록 시간으로 묶는다.
+ * 이득은 저장소에 따라 다르다(BENCHMARK.md): Linux ext4는 fsync가 겹쳐 수 배, 네이티브 Win32(NTFS)는 약 2배,
+ * Cygwin은 약 1.3배. published는 NULL이어도 된다. 꼬리 발행만 지원(순서 지정은 fq_publish_ex). */
+#define FQ_BATCH_CHUNK   256
 #define FQ_BATCH_THREADS 8
 typedef struct {
     const void *data;
@@ -231,8 +236,8 @@ int  fq_dead_drop(fq_queue *q, const char *name);
 /* ---- 유지보수 ---- */
 /* 크래시 잔재 중 mtime이 tmp_max_age_ms보다 오래된 것 정리: tmp/의 모든 파일(발행 중 크래시),
  * control/의 .now-*(FS 시각 측정), leader-*.tmp(leader.info 교체 중), election.lock.stale-*.
- * tmp_max_age_ms는 정상 발행·하트비트 한 번보다 충분히 길게(예: 수 분) 줄 것: 진행 중인 임시
- * 파일을 지우면 그 발행이나 하트비트가 실패한다.
+ * tmp_max_age_ms는 정상 발행(배치는 청크 하나)·하트비트 한 번보다 충분히 길게(예: 수 분) 줄 것: 진행 중인
+ * 임시 파일을 지우면 그 발행이나 하트비트가 실패한다.
  * 반환: 삭제한 개수(>=0), 오류 시 음수. */
 int  fq_gc(fq_queue *q, uint64_t tmp_max_age_ms);
 
