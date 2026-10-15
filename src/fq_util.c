@@ -110,7 +110,8 @@ void fq_sleep_ms(unsigned ms)
 typedef struct { void (*fn)(void *, size_t); void *arg; size_t k; } par_task;
 
 #if defined(_WIN32) && !defined(__CYGWIN__)
-static DWORD WINAPI par_main(LPVOID p) { par_task *t = (par_task *)p; t->fn(t->arg, t->k); return 0; }
+/* _beginthreadex: 작업 스레드가 CRT(malloc 등)를 쓰므로 CreateThread가 아니라 CRT가 아는 방식으로 만든다 */
+static unsigned __stdcall par_main(void *p) { par_task *t = (par_task *)p; t->fn(t->arg, t->k); return 0; }
 #else
 #  include <pthread.h>
 static void *par_main(void *p) { par_task *t = (par_task *)p; t->fn(t->arg, t->k); return NULL; }
@@ -132,8 +133,8 @@ void fq_run_parallel(size_t n, void (*fn)(void *arg, size_t k), void *arg)
         tasks[k].fn = fn; tasks[k].arg = arg; tasks[k].k = k;
         if (fq_test_par_nothreads) continue;
 #if defined(_WIN32) && !defined(__CYGWIN__)
-        th[k] = CreateThread(NULL, 0, par_main, &tasks[k], 0, NULL);
-        started[k] = th[k] != NULL;
+        th[k] = (HANDLE)_beginthreadex(NULL, 0, par_main, &tasks[k], 0, NULL);
+        started[k] = th[k] != 0;
 #else
         started[k] = pthread_create(&th[k], NULL, par_main, &tasks[k]) == 0;
 #endif
